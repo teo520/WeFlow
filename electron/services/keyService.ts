@@ -855,7 +855,7 @@ export class KeyService {
       }
 
       let found = null;
-      for (let upper = end; upper > start; upper--) {
+      for (let upper = end - 1; upper >= start; upper--) {
         // 我就写 -- 
         if (upper % 100000 === 0 && upper !== start) {
           parentPort.postMessage({ type: 'progress', scanned: 100000 });
@@ -943,18 +943,15 @@ export class KeyService {
             cleanup()
             resolve(msg.key)
           } else if (msg.type === 'done') {
-            // 单个 worker 跑完了没有找到
-            activeWorkers--
-            if (activeWorkers === 0 && !resolved) resolve(null)
+            // 单个 worker 跑完了没有找到（计数统一在 exit 事件处理）
           }
         })
 
         worker.on('error', (err) => {
           console.error('Worker error:', err)
-          activeWorkers--
-          if (activeWorkers === 0 && !resolved) resolve(null)
         })
 
+        // 统一在 exit 事件中做完成计数，避免 done/error + exit 双重递减
         worker.on('exit', () => {
           activeWorkers--
           if (activeWorkers === 0 && !resolved) resolve(null)
@@ -984,7 +981,7 @@ export class KeyService {
 
     onProgress?.('正在读取加密模板区块...')
     const ciphertexts = this.getCiphertextsFromTemplate(templateFiles)
-    if (ciphertexts.length === 0) return { success: false, error: '无法读取加密模板数据' }
+    if (ciphertexts.length < 2) return { success: false, error: '可用的加密样本不足（至少需要2个），请确认账号目录下有足够的模板图片' }
 
     onProgress?.(`成功提取 ${ciphertexts.length} 个特征样本，准备交叉校验...`)
     onProgress?.(`准备启动 ${os.cpus().length || 4} 线程并发爆破引擎 (基于 wxid: ${wxid})...`)
