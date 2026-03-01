@@ -136,9 +136,25 @@ export interface ContactInfo {
   type: 'friend' | 'group' | 'official' | 'former_friend' | 'other'
 }
 
+interface ExportSessionStats {
+  totalMessages: number
+  voiceMessages: number
+  imageMessages: number
+  videoMessages: number
+  emojiMessages: number
+  firstTimestamp?: number
+  lastTimestamp?: number
+  privateMutualGroups?: number
+  groupMemberCount?: number
+  groupMyMessages?: number
+  groupActiveSpeakers?: number
+  groupMutualFriends?: number
+}
+
 // 表情包缓存
 const emojiCache: Map<string, string> = new Map()
 const emojiDownloading: Map<string, Promise<string | null>> = new Map()
+const FRIEND_EXCLUDE_USERNAMES = new Set(['medianote', 'floatbottle', 'qmessage', 'qqmail', 'fmessage'])
 
 class ChatService {
   private configService: ConfigService
@@ -1208,6 +1224,228 @@ class ChatService {
     }
     const parsed = parseInt(String(raw), 10)
     return Number.isFinite(parsed) ? parsed : NaN
+  }
+
+  private buildIdentityKeys(raw: string): string[] {
+    const value = String(raw || '').trim()
+    if (!value) return []
+    const lowerRaw = value.toLowerCase()
+    const cleaned = this.cleanAccountDirName(value).toLowerCase()
+    if (cleaned && cleaned !== lowerRaw) {
+      return [cleaned, lowerRaw]
+    }
+    return [lowerRaw]
+  }
+
+  private extractGroupMemberUsername(member: any): string {
+    if (!member) return ''
+    if (typeof member === 'string') return member.trim()
+    return String(
+      member.username ||
+      member.userName ||
+      member.user_name ||
+      member.encryptUsername ||
+      member.encryptUserName ||
+      member.encrypt_username ||
+      member.originalName ||
+      ''
+    ).trim()
+  }
+
+  private async getFriendIdentitySet(): Promise<Set<string>> {
+    const identities = new Set<string>()
+    const contactResult = await wcdbService.execQuery(
+      'contact',
+      null,
+      'SELECT username, local_type, quan_pin FROM contact'
+    )
+    if (!contactResult.success || !contactResult.rows) {
+      return identities
+    }
+
+    for (const rowAny of contactResult.rows) {
+      const row = rowAny as Record<string, any>
+      const username = String(row.username || '').trim()
+      if (!username || username.includes('@chatroom') || username.startsWith('gh_')) continue
+      if (FRIEND_EXCLUDE_USERNAMES.has(username)) continue
+
+      const localType = this.getRowInt(row, ['local_type', 'localType', 'WCDB_CT_local_type'], 0)
+      if (localType !== 1) continue
+
+      for (const key of this.buildIdentityKeys(username)) {
+        identities.add(key)
+      }
+    }
+    return identities
+  }
+
+  private async forEachWithConcurrency<T>(
+    items: T[],
+    limit: number,
+    worker: (item: T) => Promise<void>
+  ): Promise<void> {
+    if (items.length === 0) return
+    const concurrency = Math.max(1, Math.min(limit, items.length))
+    let index = 0
+
+    const runners = Array.from({ length: concurrency }, async () => {
+      while (true) {
+        const current = index
+        index += 1
+        if (current >= items.length) return
+        await worker(items[current])
+      }
+    })
+
+    await Promise.all(runners)
+  }
+
+  private async collectSessionExportStats(
+    sessionId: string,
+    selfIdentitySet: Set<string>
+  ): Promise<ExportSessionStats> {
+    const stats: ExportSessionStats = {
+      totalMessages: 0,
+      voiceMessages: 0,
+      imageMessages: 0,
+      videoMessages: 0,
+      emojiMessages: 0
+    }
+    if (sessionId.endsWith('@chatroom')) {
+      stats.groupMyMessages = 0
+      stats.groupActiveSpeakers = 0
+    }
+
+    const senderIdentities = new Set<string>()
+    const cursorResult = await wcdbService.openMessageCursorLite(sessionId, 500, false, 0, 0)
+    if (!cursorResult.success || !cursorResult.cursor) {
+      return stats
+    }
+
+    const cursor = cursorResult.cursor
+    try {
+      while (true) {
+        const batch = await wcdbService.fetchMessageBatch(cursor)
+        if (!batch.success) {
+          break
+        }
+
+        const rows = Array.isArray(batch.rows) ? batch.rows as Record<string, any>[] : []
+        for (const row of rows) {
+          stats.totalMessages += 1
+
+          const localType = this.getRowInt(row, ['local_type', 'localType', 'type', 'msg_type', 'msgType', 'WCDB_CT_local_type'], 1)
+          if (localType === 34) stats.voiceMessages += 1
+          if (localType === 3) stats.imageMessages += 1
+          if (localType === 43) stats.videoMessages += 1
+          if (localType === 47) stats.emojiMessages += 1
+
+          const createTime = this.getRowInt(
+            row,
+            ['create_time', 'createTime', 'createtime', 'msg_create_time', 'msgCreateTime', 'msg_time', 'msgTime', 'time', 'WCDB_CT_create_time'],
+            0
+          )
+          if (createTime > 0) {
+            if (stats.firstTimestamp === undefined || createTime < stats.firstTimestamp) {
+              stats.firstTimestamp = createTime
+            }
+            if (stats.lastTimestamp === undefined || createTime > stats.lastTimestamp) {
+              stats.lastTimestamp = createTime
+            }
+          }
+
+          if (sessionId.endsWith('@chatroom')) {
+            const sender = String(this.getRowField(row, ['sender_username', 'senderUsername', 'sender', 'WCDB_CT_sender_username']) || '').trim()
+            const senderKeys = this.buildIdentityKeys(sender)
+            if (senderKeys.length > 0) {
+              senderIdentities.add(senderKeys[0])
+              if (senderKeys.some((key) => selfIdentitySet.has(key))) {
+                stats.groupMyMessages = (stats.groupMyMessages || 0) + 1
+              }
+            } else {
+              const isSend = this.coerceRowNumber(this.getRowField(row, ['computed_is_send', 'computedIsSend', 'is_send', 'isSend', 'WCDB_CT_is_send']))
+              if (Number.isFinite(isSend) && isSend === 1) {
+                stats.groupMyMessages = (stats.groupMyMessages || 0) + 1
+              }
+            }
+          }
+        }
+
+        if (!batch.hasMore || rows.length === 0) {
+          break
+        }
+      }
+    } finally {
+      await wcdbService.closeMessageCursor(cursor)
+    }
+
+    if (sessionId.endsWith('@chatroom')) {
+      stats.groupActiveSpeakers = senderIdentities.size
+    }
+    return stats
+  }
+
+  private async buildGroupRelationStats(
+    groupSessionIds: string[],
+    privateSessionIds: string[],
+    selfIdentitySet: Set<string>
+  ): Promise<{
+    privateMutualGroupMap: Record<string, number>
+    groupMutualFriendMap: Record<string, number>
+  }> {
+    const privateMutualGroupMap: Record<string, number> = {}
+    const groupMutualFriendMap: Record<string, number> = {}
+    if (groupSessionIds.length === 0) {
+      return { privateMutualGroupMap, groupMutualFriendMap }
+    }
+
+    const privateIndex = new Map<string, Set<string>>()
+    for (const sessionId of privateSessionIds) {
+      for (const key of this.buildIdentityKeys(sessionId)) {
+        const set = privateIndex.get(key) || new Set<string>()
+        set.add(sessionId)
+        privateIndex.set(key, set)
+      }
+      privateMutualGroupMap[sessionId] = 0
+    }
+
+    const friendIdentitySet = await this.getFriendIdentitySet()
+    await this.forEachWithConcurrency(groupSessionIds, 4, async (groupId) => {
+      const membersResult = await wcdbService.getGroupMembers(groupId)
+      if (!membersResult.success || !membersResult.members) {
+        groupMutualFriendMap[groupId] = 0
+        return
+      }
+
+      const touchedPrivateSessions = new Set<string>()
+      const friendMembers = new Set<string>()
+
+      for (const member of membersResult.members) {
+        const username = this.extractGroupMemberUsername(member)
+        const identityKeys = this.buildIdentityKeys(username)
+        if (identityKeys.length === 0) continue
+        const canonical = identityKeys[0]
+
+        if (!selfIdentitySet.has(canonical) && friendIdentitySet.has(canonical)) {
+          friendMembers.add(canonical)
+        }
+
+        for (const key of identityKeys) {
+          const linked = privateIndex.get(key)
+          if (!linked) continue
+          for (const sessionId of linked) {
+            touchedPrivateSessions.add(sessionId)
+          }
+        }
+      }
+
+      groupMutualFriendMap[groupId] = friendMembers.size
+      for (const sessionId of touchedPrivateSessions) {
+        privateMutualGroupMap[sessionId] = (privateMutualGroupMap[sessionId] || 0) + 1
+      }
+    })
+
+    return { privateMutualGroupMap, groupMutualFriendMap }
   }
 
   /**
@@ -3404,6 +3642,108 @@ class ChatService {
       }
     } catch (e) {
       console.error('ChatService: 获取会话详情失败:', e)
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async getExportSessionStats(sessionIds: string[]): Promise<{
+    success: boolean
+    data?: Record<string, ExportSessionStats>
+    error?: string
+  }> {
+    try {
+      const connectResult = await this.ensureConnected()
+      if (!connectResult.success) {
+        return { success: false, error: connectResult.error || '数据库未连接' }
+      }
+
+      const normalizedSessionIds = Array.from(
+        new Set(
+          (sessionIds || [])
+            .map((id) => String(id || '').trim())
+            .filter(Boolean)
+        )
+      )
+      if (normalizedSessionIds.length === 0) {
+        return { success: true, data: {} }
+      }
+
+      const myWxid = this.configService.get('myWxid') || ''
+      const selfIdentitySet = new Set<string>(this.buildIdentityKeys(myWxid))
+
+      const resultMap: Record<string, ExportSessionStats> = {}
+      await this.forEachWithConcurrency(normalizedSessionIds, 3, async (sessionId) => {
+        try {
+          resultMap[sessionId] = await this.collectSessionExportStats(sessionId, selfIdentitySet)
+        } catch {
+          resultMap[sessionId] = {
+            totalMessages: 0,
+            voiceMessages: 0,
+            imageMessages: 0,
+            videoMessages: 0,
+            emojiMessages: 0
+          }
+        }
+      })
+
+      const groupSessionIds = normalizedSessionIds.filter((id) => id.endsWith('@chatroom'))
+      const privateSessionIds = normalizedSessionIds.filter((id) => !id.endsWith('@chatroom'))
+
+      for (const privateId of privateSessionIds) {
+        resultMap[privateId] = {
+          ...resultMap[privateId],
+          privateMutualGroups: resultMap[privateId]?.privateMutualGroups ?? 0
+        }
+      }
+      for (const groupId of groupSessionIds) {
+        resultMap[groupId] = {
+          ...resultMap[groupId],
+          groupMyMessages: resultMap[groupId]?.groupMyMessages ?? 0,
+          groupActiveSpeakers: resultMap[groupId]?.groupActiveSpeakers ?? 0,
+          groupMemberCount: resultMap[groupId]?.groupMemberCount ?? 0,
+          groupMutualFriends: resultMap[groupId]?.groupMutualFriends ?? 0
+        }
+      }
+
+      if (groupSessionIds.length > 0) {
+        const memberCountsResult = await wcdbService.getGroupMemberCounts(groupSessionIds)
+        const memberCountMap = memberCountsResult.success && memberCountsResult.map ? memberCountsResult.map : {}
+        for (const groupId of groupSessionIds) {
+          resultMap[groupId] = {
+            ...resultMap[groupId],
+            groupMemberCount: typeof memberCountMap[groupId] === 'number' ? memberCountMap[groupId] : 0
+          }
+        }
+      }
+
+      if (groupSessionIds.length > 0) {
+        try {
+          const { privateMutualGroupMap, groupMutualFriendMap } = await this.buildGroupRelationStats(
+            groupSessionIds,
+            privateSessionIds,
+            selfIdentitySet
+          )
+
+          for (const privateId of privateSessionIds) {
+            resultMap[privateId] = {
+              ...resultMap[privateId],
+              privateMutualGroups: privateMutualGroupMap[privateId] || 0
+            }
+          }
+          for (const groupId of groupSessionIds) {
+            resultMap[groupId] = {
+              ...resultMap[groupId],
+              groupMutualFriends: groupMutualFriendMap[groupId] || 0
+            }
+          }
+        } catch {
+          // 群成员关系统计失败时保留默认值，避免影响主列表展示
+        }
+      }
+
+      return { success: true, data: resultMap }
+    } catch (e) {
+      console.error('ChatService: 获取导出会话统计失败:', e)
       return { success: false, error: String(e) }
     }
   }

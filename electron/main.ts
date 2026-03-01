@@ -974,6 +974,10 @@ function registerIpcHandlers() {
     return chatService.getSessionDetail(sessionId)
   })
 
+  ipcMain.handle('chat:getExportSessionStats', async (_, sessionIds: string[]) => {
+    return chatService.getExportSessionStats(sessionIds)
+  })
+
   ipcMain.handle('chat:getImageData', async (_, sessionId: string, msgId: string) => {
     return chatService.getImageData(sessionId, msgId)
   })

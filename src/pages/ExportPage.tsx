@@ -237,8 +237,6 @@ function ExportPage() {
 
   const [isLoading, setIsLoading] = useState(true)
   const [sessions, setSessions] = useState<SessionRow[]>([])
-  const [contactMap, setContactMap] = useState<Record<string, ContactInfo>>({})
-  const [groupMemberCountMap, setGroupMemberCountMap] = useState<Record<string, number>>({})
   const [sessionMetrics, setSessionMetrics] = useState<Record<string, SessionMetrics>>({})
   const [searchKeyword, setSearchKeyword] = useState('')
   const [activeTab, setActiveTab] = useState<ConversationTab>('private')
@@ -384,10 +382,9 @@ function ExportPage() {
         return
       }
 
-      const [sessionsResult, contactsResult, groupChatsResult] = await Promise.all([
+      const [sessionsResult, contactsResult] = await Promise.all([
         window.electronAPI.chat.getSessions(),
-        window.electronAPI.chat.getContacts(),
-        window.electronAPI.groupAnalytics.getGroupChats()
+        window.electronAPI.chat.getContacts()
       ])
 
       const contacts: ContactInfo[] = contactsResult.success && contactsResult.contacts ? contactsResult.contacts : []
@@ -395,15 +392,6 @@ function ExportPage() {
         map[contact.username] = contact
         return map
       }, {})
-      setContactMap(nextContactMap)
-
-      const nextGroupMemberCountMap: Record<string, number> = {}
-      if (groupChatsResult.success && groupChatsResult.data) {
-        for (const group of groupChatsResult.data) {
-          nextGroupMemberCountMap[group.username] = group.memberCount
-        }
-      }
-      setGroupMemberCountMap(nextGroupMemberCountMap)
 
       if (sessionsResult.success && sessionsResult.sessions) {
         const nextSessions = sessionsResult.sessions
@@ -468,76 +456,46 @@ function ExportPage() {
     const pending = targetSessions.filter(session => !sessionMetrics[session.username] && !loadingMetricsRef.current.has(session.username))
     if (pending.length === 0) return
 
+    const updates: Record<string, SessionMetrics> = {}
     for (const session of pending) {
       loadingMetricsRef.current.add(session.username)
+      updates[session.username] = {}
     }
 
-    const updates: Record<string, SessionMetrics> = {}
-
-    for (const session of pending) {
-      const metrics: SessionMetrics = {}
-      try {
-        const detailResult = await window.electronAPI.chat.getSessionDetail(session.username)
-        if (detailResult.success && detailResult.detail) {
-          metrics.totalMessages = detailResult.detail.messageCount
-          metrics.firstTimestamp = detailResult.detail.firstMessageTime
-          metrics.lastTimestamp = detailResult.detail.latestMessageTime
-        }
-
-        const exportStats = await window.electronAPI.export.getExportStats([session.username], {
-          exportVoiceAsText: false,
-          exportMedia: true,
-          exportImages: true,
-          exportVoices: true,
-          exportVideos: true,
-          exportEmojis: true,
-          dateRange: null
-        })
-        metrics.voiceMessages = exportStats.voiceMessages
-        if (metrics.totalMessages === undefined) {
-          metrics.totalMessages = exportStats.totalMessages
-        }
-
-        if (session.kind === 'group') {
-          metrics.groupMemberCount = groupMemberCountMap[session.username]
-
-          const [mediaStatsResult, rankingResult] = await Promise.all([
-            window.electronAPI.groupAnalytics.getGroupMediaStats(session.username),
-            window.electronAPI.groupAnalytics.getGroupMessageRanking(session.username)
-          ])
-
-          if (mediaStatsResult.success && mediaStatsResult.data?.typeCounts) {
-            for (const item of mediaStatsResult.data.typeCounts) {
-              const n = item.name.toLowerCase()
-              if (n.includes('图片')) metrics.imageMessages = item.count
-              if (n.includes('视频')) metrics.videoMessages = item.count
-              if (n.includes('语音')) metrics.voiceMessages = item.count
-              if (n.includes('表情')) metrics.emojiMessages = item.count
-            }
-          }
-
-          if (rankingResult.success && rankingResult.data) {
-            metrics.groupActiveSpeakers = rankingResult.data.length
-            const selfWxid = session.selfWxid || currentUser.wxid
-            const me = rankingResult.data.find(item => item.member.username === selfWxid)
-            if (me) {
-              metrics.groupMyMessages = me.messageCount
-            }
+    try {
+      const statsResult = await window.electronAPI.chat.getExportSessionStats(pending.map(session => session.username))
+      if (statsResult.success && statsResult.data) {
+        for (const session of pending) {
+          const raw = statsResult.data[session.username]
+          if (!raw) continue
+          updates[session.username] = {
+            totalMessages: raw.totalMessages,
+            voiceMessages: raw.voiceMessages,
+            imageMessages: raw.imageMessages,
+            videoMessages: raw.videoMessages,
+            emojiMessages: raw.emojiMessages,
+            privateMutualGroups: raw.privateMutualGroups,
+            groupMemberCount: raw.groupMemberCount,
+            groupMyMessages: raw.groupMyMessages,
+            groupActiveSpeakers: raw.groupActiveSpeakers,
+            groupMutualFriends: raw.groupMutualFriends,
+            firstTimestamp: raw.firstTimestamp,
+            lastTimestamp: raw.lastTimestamp
           }
         }
-      } catch (error) {
-        console.error('加载会话统计失败:', session.username, error)
-      } finally {
+      }
+    } catch (error) {
+      console.error('加载会话统计失败:', error)
+    } finally {
+      for (const session of pending) {
         loadingMetricsRef.current.delete(session.username)
       }
-
-      updates[session.username] = metrics
     }
 
     if (Object.keys(updates).length > 0) {
       setSessionMetrics(prev => ({ ...prev, ...updates }))
     }
-  }, [sessionMetrics, groupMemberCountMap, currentUser.wxid])
+  }, [sessionMetrics])
 
   useEffect(() => {
     const targets = visibleSessions.slice(0, 40)

@@ -124,6 +124,24 @@ export interface ElectronAPI {
       }
       error?: string
     }>
+    getExportSessionStats: (sessionIds: string[]) => Promise<{
+      success: boolean
+      data?: Record<string, {
+        totalMessages: number
+        voiceMessages: number
+        imageMessages: number
+        videoMessages: number
+        emojiMessages: number
+        firstTimestamp?: number
+        lastTimestamp?: number
+        privateMutualGroups?: number
+        groupMemberCount?: number
+        groupMyMessages?: number
+        groupActiveSpeakers?: number
+        groupMutualFriends?: number
+      }>
+      error?: string
+    }>
     getImageData: (sessionId: string, msgId: string) => Promise<{ success: boolean; data?: string; error?: string }>
     getVoiceData: (sessionId: string, msgId: string, createTime?: number, serverId?: string | number) => Promise<{ success: boolean; data?: string; error?: string }>
     getAllVoiceMessages: (sessionId: string) => Promise<{ success: boolean; messages?: Message[]; error?: string }>
