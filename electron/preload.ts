@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   key: {
     autoGetDbKey: () => ipcRenderer.invoke('key:autoGetDbKey'),
     autoGetImageKey: (manualDir?: string, wxid?: string) => ipcRenderer.invoke('key:autoGetImageKey', manualDir, wxid),
+    scanImageKeyFromMemory: (userDir: string) => ipcRenderer.invoke('key:scanImageKeyFromMemory', userDir),
     onDbKeyStatus: (callback: (payload: { message: string; level: number }) => void) => {
       ipcRenderer.on('key:dbKeyStatus', (_, payload) => callback(payload))
       return () => ipcRenderer.removeAllListeners('key:dbKeyStatus')

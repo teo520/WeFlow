@@ -731,4 +731,256 @@ export class KeyService {
       aesKey
     }
   }
+
+  // --- 内存扫描备选方案（融合 Dart+Python 优点）---
+  // 只扫 RW 可写区域（更快），同时支持 ASCII 和 UTF-16LE 两种密钥格式
+  // 验证支持 JPEG/PNG/WEBP/WXGF/GIF 多种格式
+
+  async autoGetImageKeyByMemoryScan(
+    userDir: string,
+    onProgress?: (message: string) => void
+  ): Promise<ImageKeyResult> {
+    if (!this.ensureWin32()) return { success: false, error: '仅支持 Windows' }
+
+    try {
+      // 1. 查找模板文件获取密文和 XOR 密钥
+      onProgress?.('正在查找模板文件...')
+      const { ciphertext, xorKey } = await this._findTemplateData(userDir)
+      if (!ciphertext) return { success: false, error: '未找到 V2 模板文件，请先在微信中查看几张图片' }
+
+      onProgress?.(`XOR 密钥: 0x${(xorKey ?? 0).toString(16).padStart(2, '0')}，正在查找微信进程...`)
+
+      // 2. 找微信 PID
+      const pid = await this.findWeChatPid()
+      if (!pid) return { success: false, error: '微信进程未运行，请先启动微信' }
+
+      onProgress?.(`已找到微信进程 PID=${pid}，正在扫描内存...`)
+
+      // 3. 持续轮询内存扫描，最多 60 秒
+      const deadline = Date.now() + 60_000
+      let scanCount = 0
+      while (Date.now() < deadline) {
+        scanCount++
+        onProgress?.(`第 ${scanCount} 次扫描内存，请在微信中打开图片大图...`)
+        const aesKey = await this._scanMemoryForAesKey(pid, ciphertext, onProgress)
+        if (aesKey) {
+          onProgress?.('密钥获取成功')
+          return { success: true, xorKey: xorKey ?? 0, aesKey }
+        }
+        // 等 5 秒再试
+        await new Promise(r => setTimeout(r, 5000))
+      }
+
+      return {
+        success: false,
+        error: '60 秒内未找到 AES 密钥。\n请确保已在微信中打开 2-3 张图片大图后再试。'
+      }
+    } catch (e) {
+      return { success: false, error: `内存扫描失败: ${e}` }
+    }
+  }
+
+  private async _findTemplateData(userDir: string): Promise<{ ciphertext: Buffer | null; xorKey: number | null }> {
+    const { readdirSync, readFileSync, statSync } = await import('fs')
+    const { join } = await import('path')
+    const V2_MAGIC = Buffer.from([0x07, 0x08, 0x56, 0x32, 0x08, 0x07])
+
+    // 递归收集 *_t.dat 文件
+    const collect = (dir: string, results: string[], limit = 32) => {
+      if (results.length >= limit) return
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (results.length >= limit) break
+          const full = join(dir, entry.name)
+          if (entry.isDirectory()) collect(full, results, limit)
+          else if (entry.isFile() && entry.name.endsWith('_t.dat')) results.push(full)
+        }
+      } catch { /* 忽略无权限目录 */ }
+    }
+
+    const files: string[] = []
+    collect(userDir, files)
+
+    // 按修改时间降序
+    files.sort((a, b) => {
+      try { return statSync(b).mtimeMs - statSync(a).mtimeMs } catch { return 0 }
+    })
+
+    let ciphertext: Buffer | null = null
+    const tailCounts: Record<string, number> = {}
+
+    for (const f of files.slice(0, 32)) {
+      try {
+        const data = readFileSync(f)
+        if (data.length < 8) continue
+
+        // 统计末尾两字节用于 XOR 密钥
+        if (data.subarray(0, 6).equals(V2_MAGIC) && data.length >= 2) {
+          const key = `${data[data.length - 2]}_${data[data.length - 1]}`
+          tailCounts[key] = (tailCounts[key] ?? 0) + 1
+        }
+
+        // 提取密文（取第一个有效的）
+        if (!ciphertext && data.subarray(0, 6).equals(V2_MAGIC) && data.length >= 0x1F) {
+          ciphertext = data.subarray(0xF, 0x1F)
+        }
+      } catch { /* 忽略 */ }
+    }
+
+    // 计算 XOR 密钥
+    let xorKey: number | null = null
+    let maxCount = 0
+    for (const [key, count] of Object.entries(tailCounts)) {
+      if (count > maxCount) { maxCount = count; const [x, y] = key.split('_').map(Number); const k = x ^ 0xFF; if (k === (y ^ 0xD9)) xorKey = k }
+    }
+
+    return { ciphertext, xorKey }
+  }
+
+  private async _scanMemoryForAesKey(
+    pid: number,
+    ciphertext: Buffer,
+    onProgress?: (msg: string) => void
+  ): Promise<string | null> {
+    if (!this.ensureKernel32()) return null
+
+    // 直接用已加载的 kernel32 实例，用 uintptr 传地址
+    const VirtualQueryEx = this.kernel32.func('VirtualQueryEx', 'size_t', ['void*', 'uintptr', 'void*', 'size_t'])
+    const ReadProcessMemory = this.kernel32.func('ReadProcessMemory', 'bool', ['void*', 'uintptr', 'void*', 'size_t', this.koffi.out('size_t*')])
+
+    // RW 保护标志（只扫可写区域，速度更快）
+    const RW_FLAGS = 0x04 | 0x08 | 0x40 | 0x80 // PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY
+    const MEM_COMMIT = 0x1000
+    const PAGE_NOACCESS = 0x01
+    const PAGE_GUARD = 0x100
+    const MBI_SIZE = 48 // MEMORY_BASIC_INFORMATION size on x64
+
+    const hProcess = this.OpenProcess(0x1F0FFF, false, pid)
+    if (!hProcess) return null
+
+    try {
+      // 枚举 RW 内存区域
+      const regions: Array<[number, number]> = []
+      let addr = 0
+      const mbi = Buffer.alloc(MBI_SIZE)
+
+      while (addr < 0x7FFFFFFFFFFF) {
+        const ret = VirtualQueryEx(hProcess, addr, mbi, MBI_SIZE)
+        if (ret === 0) break
+        // MEMORY_BASIC_INFORMATION x64 布局:
+        // 0:  BaseAddress (8)
+        // 8:  AllocationBase (8)
+        // 16: AllocationProtect (4) + 4 padding
+        // 24: RegionSize (8)
+        // 32: State (4)
+        // 36: Protect (4)
+        // 40: Type (4) + 4 padding = 48 total
+        const base = Number(mbi.readBigUInt64LE(0))
+        const size = Number(mbi.readBigUInt64LE(24))
+        const state = mbi.readUInt32LE(32)
+        const protect = mbi.readUInt32LE(36)
+
+        if (state === MEM_COMMIT &&
+            protect !== PAGE_NOACCESS &&
+            (protect & PAGE_GUARD) === 0 &&
+            (protect & RW_FLAGS) !== 0 &&
+            size <= 50 * 1024 * 1024) {
+          regions.push([base, size])
+        }
+        const next = base + size
+        if (next <= addr) break
+        addr = next
+      }
+
+      const totalMB = regions.reduce((s, [, sz]) => s + sz, 0) / 1024 / 1024
+      onProgress?.(`扫描 ${regions.length} 个 RW 区域 (${totalMB.toFixed(0)} MB)...`)
+
+      const CHUNK = 4 * 1024 * 1024
+      const OVERLAP = 65
+
+      for (let i = 0; i < regions.length; i++) {
+        const [base, size] = regions[i]
+        if (i % 20 === 0) {
+          onProgress?.(`扫描进度 ${i}/${regions.length}...`)
+          await new Promise(r => setTimeout(r, 1)) // 让出事件循环
+        }
+
+        let offset = 0
+        let trailing: Buffer | null = null
+
+        while (offset < size) {
+          const chunkSize = Math.min(CHUNK, size - offset)
+          const buf = Buffer.alloc(chunkSize)
+          const bytesReadOut = [0]
+          const ok = ReadProcessMemory(hProcess, base + offset, buf, chunkSize, bytesReadOut)
+          if (!ok || bytesReadOut[0] === 0) { offset += chunkSize; trailing = null; continue }
+
+          const data: Buffer = trailing ? Buffer.concat([trailing, buf.subarray(0, bytesReadOut[0])]) : buf.subarray(0, bytesReadOut[0])
+
+          // 搜索 ASCII 32字节密钥
+          const key = this._searchAsciiKey(data, ciphertext)
+          if (key) { this.CloseHandle(hProcess); return key }
+
+          // 搜索 UTF-16LE 32字节密钥
+          const key16 = this._searchUtf16Key(data, ciphertext)
+          if (key16) { this.CloseHandle(hProcess); return key16 }
+
+          trailing = data.subarray(Math.max(0, data.length - OVERLAP))
+          offset += chunkSize
+        }
+      }
+
+      return null
+    } finally {
+      this.CloseHandle(hProcess)
+    }
+  }
+
+  private _searchAsciiKey(data: Buffer, ciphertext: Buffer): string | null {
+    for (let i = 0; i < data.length - 34; i++) {
+      if (this._isAlphaNum(data[i])) continue
+      let valid = true
+      for (let j = 1; j <= 32; j++) {
+        if (!this._isAlphaNum(data[i + j])) { valid = false; break }
+      }
+      if (!valid) continue
+      if (i + 33 < data.length && this._isAlphaNum(data[i + 33])) continue
+      const keyBytes = data.subarray(i + 1, i + 33)
+      if (this._verifyAesKey(keyBytes, ciphertext)) return keyBytes.toString('ascii').substring(0, 16)
+    }
+    return null
+  }
+
+  private _searchUtf16Key(data: Buffer, ciphertext: Buffer): string | null {
+    for (let i = 0; i < data.length - 65; i++) {
+      let valid = true
+      for (let j = 0; j < 32; j++) {
+        if (data[i + j * 2 + 1] !== 0x00 || !this._isAlphaNum(data[i + j * 2])) { valid = false; break }
+      }
+      if (!valid) continue
+      const keyBytes = Buffer.alloc(32)
+      for (let j = 0; j < 32; j++) keyBytes[j] = data[i + j * 2]
+      if (this._verifyAesKey(keyBytes, ciphertext)) return keyBytes.toString('ascii').substring(0, 16)
+    }
+    return null
+  }
+
+  private _isAlphaNum(b: number): boolean {
+    return (b >= 0x61 && b <= 0x7A) || (b >= 0x41 && b <= 0x5A) || (b >= 0x30 && b <= 0x39)
+  }
+
+  private _verifyAesKey(keyBytes: Buffer, ciphertext: Buffer): boolean {
+    try {
+      const decipher = crypto.createDecipheriv('aes-128-ecb', keyBytes.subarray(0, 16), null)
+      decipher.setAutoPadding(false)
+      const dec = Buffer.concat([decipher.update(ciphertext), decipher.final()])
+      // 支持 JPEG / PNG / WEBP / WXGF / GIF
+      if (dec[0] === 0xFF && dec[1] === 0xD8 && dec[2] === 0xFF) return true
+      if (dec[0] === 0x89 && dec[1] === 0x50 && dec[2] === 0x4E && dec[3] === 0x47) return true
+      if (dec[0] === 0x52 && dec[1] === 0x49 && dec[2] === 0x46 && dec[3] === 0x46) return true
+      if (dec[0] === 0x77 && dec[1] === 0x78 && dec[2] === 0x67 && dec[3] === 0x66) return true
+      if (dec[0] === 0x47 && dec[1] === 0x49 && dec[2] === 0x46) return true
+      return false
+    } catch { return false }
+  }
 }

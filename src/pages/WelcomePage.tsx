@@ -309,22 +309,16 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
 
   const handleAutoGetImageKey = async () => {
     if (isFetchingImageKey) return
-    if (!dbPath) {
-      setError('请先选择数据库目录')
-      return
-    }
+    if (!dbPath) { setError('请先选择数据库目录'); return }
     setIsFetchingImageKey(true)
     setError('')
     setImageKeyPercent(0)
     setImageKeyStatus('正在准备获取图片密钥...')
     try {
-      // 拼接完整的账号目录，确保 KeyService 能准确找到模板文件
       const accountPath = wxid ? `${dbPath}/${wxid}` : dbPath
       const result = await window.electronAPI.key.autoGetImageKey(accountPath, wxid)
       if (result.success && result.aesKey) {
-        if (typeof result.xorKey === 'number') {
-          setImageXorKey(`0x${result.xorKey.toString(16).toUpperCase().padStart(2, '0')}`)
-        }
+        if (typeof result.xorKey === 'number') setImageXorKey(`0x${result.xorKey.toString(16).toUpperCase().padStart(2, '0')}`)
         setImageAesKey(result.aesKey)
         setImageKeyStatus('已获取图片密钥')
       } else {
@@ -332,6 +326,30 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
       }
     } catch (e) {
       setError(`自动获取图片密钥失败: ${e}`)
+    } finally {
+      setIsFetchingImageKey(false)
+    }
+  }
+
+  const handleScanImageKeyFromMemory = async () => {
+    if (isFetchingImageKey) return
+    if (!dbPath) { setError('请先选择数据库目录'); return }
+    setIsFetchingImageKey(true)
+    setError('')
+    setImageKeyPercent(0)
+    setImageKeyStatus('正在扫描内存...')
+    try {
+      const accountPath = wxid ? `${dbPath}/${wxid}` : dbPath
+      const result = await window.electronAPI.key.scanImageKeyFromMemory(accountPath)
+      if (result.success && result.aesKey) {
+        if (typeof result.xorKey === 'number') setImageXorKey(`0x${result.xorKey.toString(16).toUpperCase().padStart(2, '0')}`)
+        setImageAesKey(result.aesKey)
+        setImageKeyStatus('内存扫描成功，已获取图片密钥')
+      } else {
+        setError(result.error || '内存扫描获取图片密钥失败')
+      }
+    } catch (e) {
+      setError(`内存扫描失败: ${e}`)
     } finally {
       setIsFetchingImageKey(false)
     }
@@ -747,50 +765,40 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
 
             {currentStep.id === 'image' && (
               <div className="form-group">
+                <div className="field-hint" style={{ color: '#f59e0b', marginBottom: '12px' }}>
+                  ⚠️ 快速获取方案基于本地缓存计算，可能因账号信息不匹配而不准确。若图片无法解密，请使用下方「内存扫描」方案。
+                </div>
                 <div className="grid-2">
                   <div>
                     <label className="field-label">图片 XOR 密钥</label>
-                    <input
-                      type="text"
-                      className="field-input"
-                      placeholder="0x..."
-                      value={imageXorKey}
-                      onChange={(e) => setImageXorKey(e.target.value)}
-                    />
+                    <input type="text" className="field-input" placeholder="0x..." value={imageXorKey} onChange={(e) => setImageXorKey(e.target.value)} />
                   </div>
                   <div>
                     <label className="field-label">图片 AES 密钥</label>
-                    <input
-                      type="text"
-                      className="field-input"
-                      placeholder="16位密钥"
-                      value={imageAesKey}
-                      onChange={(e) => setImageAesKey(e.target.value)}
-                    />
+                    <input type="text" className="field-input" placeholder="16位密钥" value={imageAesKey} onChange={(e) => setImageAesKey(e.target.value)} />
                   </div>
                 </div>
 
-                <button className="btn btn-secondary btn-block mt-4" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey}>
-                  {isFetchingImageKey ? '获取中...' : '自动获取图片密钥'}
-                </button>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+                  <button className="btn btn-secondary btn-block" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey} title="从本地缓存快速计算（可能不准确）">
+                    {isFetchingImageKey ? '获取中...' : '快速获取（缓存计算）'}
+                  </button>
+                  <button className="btn btn-primary btn-block" onClick={handleScanImageKeyFromMemory} disabled={isFetchingImageKey} title="扫描微信进程内存，准确率更高，需要微信正在运行">
+                    {isFetchingImageKey ? '扫描中...' : '内存扫描（推荐）'}
+                  </button>
+                </div>
 
                 {isFetchingImageKey ? (
                   <div className="brute-force-progress">
                     <div className="status-header">
                       <span className="status-text">{imageKeyStatus || '正在启动...'}</span>
-                      {imageKeyPercent !== null && <span className="percent">{imageKeyPercent.toFixed(1)}%</span>}
                     </div>
-                    {imageKeyPercent !== null && (
-                      <div className="progress-bar-container">
-                        <div className="fill" style={{ width: `${imageKeyPercent}%` }}></div>
-                      </div>
-                    )}
                   </div>
                 ) : (
                   imageKeyStatus && <div className="status-message" style={{ marginTop: '12px' }}>{imageKeyStatus}</div>
                 )}
 
-                <div className="field-hint">请在微信中打开几张图片后再点击获取</div>
+                <div className="field-hint" style={{ marginTop: '8px' }}>内存扫描需要微信正在运行，并在微信中打开 2-3 张图片大图后再点击</div>
               </div>
             )}
           </div>

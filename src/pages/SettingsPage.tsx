@@ -768,47 +768,60 @@ function SettingsPage() {
 
   const handleAutoGetImageKey = async () => {
     if (isFetchingImageKey) return;
-    if (!dbPath) {
-      showMessage('请先选择数据库目录', false);
-      return;
-    }
+    if (!dbPath) { showMessage('请先选择数据库目录', false); return; }
     setIsFetchingImageKey(true);
     setImageKeyPercent(0)
     setImageKeyStatus('正在初始化...');
-    setImageKeyProgress(0); // 重置进度
+    setImageKeyProgress(0);
 
     try {
       const accountPath = wxid ? `${dbPath}/${wxid}` : dbPath;
       const result = await window.electronAPI.key.autoGetImageKey(accountPath, wxid)
       if (result.success && result.aesKey) {
-        if (typeof result.xorKey === 'number') {
-          setImageXorKey(`0x${result.xorKey.toString(16).toUpperCase().padStart(2, '0')}`)
-        }
+        if (typeof result.xorKey === 'number') setImageXorKey(`0x${result.xorKey.toString(16).toUpperCase().padStart(2, '0')}`)
         setImageAesKey(result.aesKey)
         setImageKeyStatus('已获取图片密钥')
         showMessage('已自动获取图片密钥', true)
-
-        // Auto-save after fetching keys
-        // We need to use the values directly because state updates are async
         const newXorKey = typeof result.xorKey === 'number' ? result.xorKey : 0
         const newAesKey = result.aesKey
-
         await configService.setImageXorKey(newXorKey)
         await configService.setImageAesKey(newAesKey)
-
-        if (wxid) {
-          await configService.setWxidConfig(wxid, {
-            decryptKey: decryptKey, // use current state as it hasn't changed here
-            imageXorKey: newXorKey,
-            imageAesKey: newAesKey
-          })
-        }
-
+        if (wxid) await configService.setWxidConfig(wxid, { decryptKey, imageXorKey: newXorKey, imageAesKey: newAesKey })
       } else {
         showMessage(result.error || '自动获取图片密钥失败', false)
       }
     } catch (e: any) {
       showMessage(`自动获取图片密钥失败: ${e}`, false)
+    } finally {
+      setIsFetchingImageKey(false)
+    }
+  }
+
+  const handleScanImageKeyFromMemory = async () => {
+    if (isFetchingImageKey) return;
+    if (!dbPath) { showMessage('请先选择数据库目录', false); return; }
+    setIsFetchingImageKey(true);
+    setImageKeyPercent(0)
+    setImageKeyStatus('正在扫描内存...');
+
+    try {
+      const accountPath = wxid ? `${dbPath}/${wxid}` : dbPath;
+      const result = await window.electronAPI.key.scanImageKeyFromMemory(accountPath)
+      if (result.success && result.aesKey) {
+        if (typeof result.xorKey === 'number') setImageXorKey(`0x${result.xorKey.toString(16).toUpperCase().padStart(2, '0')}`)
+        setImageAesKey(result.aesKey)
+        setImageKeyStatus('内存扫描成功，已获取图片密钥')
+        showMessage('内存扫描成功，已获取图片密钥', true)
+        const newXorKey = typeof result.xorKey === 'number' ? result.xorKey : 0
+        const newAesKey = result.aesKey
+        await configService.setImageXorKey(newXorKey)
+        await configService.setImageAesKey(newAesKey)
+        if (wxid) await configService.setWxidConfig(wxid, { decryptKey, imageXorKey: newXorKey, imageAesKey: newAesKey })
+      } else {
+        showMessage(result.error || '内存扫描获取图片密钥失败', false)
+      }
+    } catch (e: any) {
+      showMessage(`内存扫描失败: ${e}`, false)
     } finally {
       setIsFetchingImageKey(false)
     }
@@ -1373,24 +1386,27 @@ function SettingsPage() {
             scheduleConfigSave('keys', () => syncCurrentKeys({ imageAesKey: value, wxid }))
           }}
         />
-        <button className="btn btn-secondary btn-sm" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey}>
-          <Plug size={14} /> {isFetchingImageKey ? '获取中...' : '自动获取图片密钥'}
-        </button>
+        <div className="form-hint" style={{ color: '#f59e0b', margin: '6px 0' }}>
+          ⚠️ 快速获取方案基于本地缓存计算，可能因账号信息不匹配而不准确。若图片无法解密，请使用「内存扫描」方案。
+        </div>
+        <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+          <button className="btn btn-secondary btn-sm" onClick={handleAutoGetImageKey} disabled={isFetchingImageKey} title="从本地缓存快速计算（可能不准确）">
+            <Plug size={14} /> {isFetchingImageKey ? '获取中...' : '快速获取（缓存计算）'}
+          </button>
+          <button className="btn btn-primary btn-sm" onClick={handleScanImageKeyFromMemory} disabled={isFetchingImageKey} title="扫描微信进程内存，准确率更高">
+            {isFetchingImageKey ? '扫描中...' : '内存扫描（推荐）'}
+          </button>
+        </div>
         {isFetchingImageKey ? (
           <div className="brute-force-progress">
             <div className="status-header">
               <span className="status-text">{imageKeyStatus || '正在启动...'}</span>
-              {imageKeyPercent !== null && <span className="percent">{imageKeyPercent.toFixed(1)}%</span>}
             </div>
-            {imageKeyPercent !== null && (
-              <div className="progress-bar-container">
-                <div className="fill" style={{ width: `${imageKeyPercent}%` }}></div>
-              </div>
-            )}
           </div>
         ) : (
           imageKeyStatus && <div className="form-hint status-text" style={{ marginTop: '8px' }}>{imageKeyStatus}</div>
         )}
+        <span className="form-hint">内存扫描需要微信正在运行，并在微信中打开 2-3 张图片大图后再点击</span>
       </div>
 
       <div className="form-group">

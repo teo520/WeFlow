@@ -1539,6 +1539,12 @@ function registerIpcHandlers() {
     }, wxid)
   })
 
+  ipcMain.handle('key:scanImageKeyFromMemory', async (event, userDir: string) => {
+    return keyService.autoGetImageKeyByMemoryScan(userDir, (message) => {
+      event.sender.send('key:imageKeyStatus', { message })
+    })
+  })
+
   // HTTP API 服务
   ipcMain.handle('http:start', async (_, port?: number) => {
     return httpService.start(port || 5031)
