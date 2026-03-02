@@ -2749,71 +2749,121 @@ function ChatPage(_props: ChatPageProps) {
       {showMessageInfo && createPortal(
         <div className="message-info-overlay" onClick={() => setShowMessageInfo(null)}>
           <div className="message-info-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Info size={18} />
-                <h3 style={{ margin: 0 }}>消息详细信息</h3>
-              </div>
+            <div className="detail-header">
+              <h4>消息详情</h4>
               <button className="close-btn" onClick={() => setShowMessageInfo(null)}>
-                <X size={18} />
+                <X size={16} />
               </button>
             </div>
-            <div className="modal-body">
-              <div className="info-section">
-                <h4>基础字段</h4>
-                <div className="info-grid">
-                  <div className="info-item"><span className="label">Local ID</span><span className="value select-text">{showMessageInfo.localId}</span></div>
-                  <div className="info-item"><span className="label">Server ID</span><span className="value select-text">{showMessageInfo.serverId}</span></div>
-                  <div className="info-item"><span className="label">Local Type</span><span className="value select-text">{showMessageInfo.localType}</span></div>
-                  <div className="info-item"><span className="label">发送者</span><span className="value select-text">{showMessageInfo.senderUsername || '-'}</span></div>
-                  <div className="info-item"><span className="label">创建时间</span><span className="value select-text">{new Date(showMessageInfo.createTime * 1000).toLocaleString()} ({showMessageInfo.createTime})</span></div>
-                  <div className="info-item"><span className="label">发送状态</span><span className="value select-text">{showMessageInfo.isSend === 1 ? '发送' : '接收'}</span></div>
+            <div className="detail-content">
+              <div className="detail-section">
+                <div className="detail-item">
+                  <Hash size={14} />
+                  <span className="label">Local ID</span>
+                  <span className="value">{showMessageInfo.localId}</span>
+                  <button className="copy-btn" title="复制" onClick={() => handleCopyField(String(showMessageInfo.localId), 'msgLocalId')}>
+                    {copiedField === 'msgLocalId' ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                </div>
+                <div className="detail-item">
+                  <Hash size={14} />
+                  <span className="label">Server ID</span>
+                  <span className="value">{showMessageInfo.serverId}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="label">消息类型</span>
+                  <span className="value highlight">{showMessageInfo.localType}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="label">发送者</span>
+                  <span className="value">{showMessageInfo.senderUsername || '-'}</span>
+                  {showMessageInfo.senderUsername && (
+                    <button className="copy-btn" title="复制" onClick={() => handleCopyField(showMessageInfo.senderUsername!, 'msgSender')}>
+                      {copiedField === 'msgSender' ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                  )}
+                </div>
+                <div className="detail-item">
+                  <Calendar size={14} />
+                  <span className="label">创建时间</span>
+                  <span className="value">{new Date(showMessageInfo.createTime * 1000).toLocaleString()}</span>
+                </div>
+                <div className="detail-item">
+                  <span className="label">发送状态</span>
+                  <span className="value">{showMessageInfo.isSend === 1 ? '发送' : '接收'}</span>
                 </div>
               </div>
 
-              {showMessageInfo.imageMd5 && (
-                <div className="info-section">
-                  <h4>图片信息</h4>
-                  <div className="info-grid">
-                    <div className="info-item"><span className="label">Image MD5</span><span className="value select-text code">{showMessageInfo.imageMd5}</span></div>
-                    {showMessageInfo.imageDatName && <div className="info-item"><span className="label">DAT 文件名</span><span className="value select-text code">{showMessageInfo.imageDatName}</span></div>}
+              {(showMessageInfo.imageMd5 || showMessageInfo.videoMd5 || showMessageInfo.voiceDurationSeconds != null) && (
+                <div className="detail-section">
+                  <div className="section-title">
+                    <ImageIcon size={14} />
+                    <span>媒体信息</span>
                   </div>
-                </div>
-              )}
-
-              {showMessageInfo.videoMd5 && (
-                <div className="info-section">
-                  <h4>视频信息</h4>
-                  <div className="info-grid">
-                    <div className="info-item"><span className="label">Video MD5</span><span className="value select-text code">{showMessageInfo.videoMd5}</span></div>
-                  </div>
-                </div>
-              )}
-
-              {showMessageInfo.voiceDurationSeconds != null && (
-                <div className="info-section">
-                  <h4>语音信息</h4>
-                  <div className="info-grid">
-                    <div className="info-item"><span className="label">时长</span><span className="value select-text">{showMessageInfo.voiceDurationSeconds}秒</span></div>
-                  </div>
+                  {showMessageInfo.imageMd5 && (
+                    <div className="detail-item">
+                      <span className="label">Image MD5</span>
+                      <span className="value mono">{showMessageInfo.imageMd5}</span>
+                      <button className="copy-btn" title="复制" onClick={() => handleCopyField(showMessageInfo.imageMd5!, 'imgMd5')}>
+                        {copiedField === 'imgMd5' ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
+                    </div>
+                  )}
+                  {showMessageInfo.imageDatName && (
+                    <div className="detail-item">
+                      <span className="label">DAT 文件</span>
+                      <span className="value mono">{showMessageInfo.imageDatName}</span>
+                    </div>
+                  )}
+                  {showMessageInfo.videoMd5 && (
+                    <div className="detail-item">
+                      <span className="label">Video MD5</span>
+                      <span className="value mono">{showMessageInfo.videoMd5}</span>
+                      <button className="copy-btn" title="复制" onClick={() => handleCopyField(showMessageInfo.videoMd5!, 'vidMd5')}>
+                        {copiedField === 'vidMd5' ? <Check size={12} /> : <Copy size={12} />}
+                      </button>
+                    </div>
+                  )}
+                  {showMessageInfo.voiceDurationSeconds != null && (
+                    <div className="detail-item">
+                      <Mic size={14} />
+                      <span className="label">语音时长</span>
+                      <span className="value">{showMessageInfo.voiceDurationSeconds}秒</span>
+                    </div>
+                  )}
                 </div>
               )}
 
               {(showMessageInfo.emojiMd5 || showMessageInfo.emojiCdnUrl) && (
-                <div className="info-section">
-                  <h4>表情包信息</h4>
-                  <div className="info-grid">
-                    {showMessageInfo.emojiMd5 && <div className="info-item"><span className="label">MD5</span><span className="value select-text code">{showMessageInfo.emojiMd5}</span></div>}
-                    {showMessageInfo.emojiCdnUrl && <div className="info-item"><span className="label">CDN URL</span><span className="value select-text code break-all">{showMessageInfo.emojiCdnUrl}</span></div>}
+                <div className="detail-section">
+                  <div className="section-title">
+                    <span>表情包信息</span>
                   </div>
+                  {showMessageInfo.emojiMd5 && (
+                    <div className="detail-item">
+                      <span className="label">MD5</span>
+                      <span className="value mono">{showMessageInfo.emojiMd5}</span>
+                    </div>
+                  )}
+                  {showMessageInfo.emojiCdnUrl && (
+                    <div className="detail-item">
+                      <span className="label">CDN URL</span>
+                      <span className="value mono">{showMessageInfo.emojiCdnUrl}</span>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {(showMessageInfo.rawContent || showMessageInfo.content) && (
-                <div className="info-section">
-                  <h4>原始消息内容</h4>
-                  <div className="raw-content-container">
-                    <pre className="select-text">{showMessageInfo.rawContent || showMessageInfo.content}</pre>
+              {showMessageInfo.localType !== 1 && (showMessageInfo.rawContent || showMessageInfo.content) && (
+                <div className="detail-section">
+                  <div className="section-title">
+                    <span>原始消息内容</span>
+                    <button className="copy-btn" title="复制" onClick={() => handleCopyField(showMessageInfo.rawContent || showMessageInfo.content || '', 'rawContent')}>
+                      {copiedField === 'rawContent' ? <Check size={12} /> : <Copy size={12} />}
+                    </button>
+                  </div>
+                  <div className="raw-content-box">
+                    <pre>{showMessageInfo.rawContent || showMessageInfo.content}</pre>
                   </div>
                 </div>
               )}
