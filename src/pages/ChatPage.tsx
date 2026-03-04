@@ -453,11 +453,13 @@ function ChatPage(props: ChatPageProps) {
   const initialRevealTimerRef = useRef<number | null>(null)
   const sessionListRef = useRef<HTMLDivElement>(null)
   const jumpCalendarWrapRef = useRef<HTMLDivElement>(null)
+  const jumpPopoverPortalRef = useRef<HTMLDivElement>(null)
   const [currentOffset, setCurrentOffset] = useState(0)
   const [jumpStartTime, setJumpStartTime] = useState(0)
   const [jumpEndTime, setJumpEndTime] = useState(0)
   const [showJumpPopover, setShowJumpPopover] = useState(false)
   const [jumpPopoverDate, setJumpPopoverDate] = useState<Date>(new Date())
+  const [jumpPopoverPosition, setJumpPopoverPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
   const isDateJumpRef = useRef(false)
   const [messageDates, setMessageDates] = useState<Set<string>>(new Set())
   const [hasLoadedMessageDates, setHasLoadedMessageDates] = useState(false)
@@ -669,6 +671,31 @@ function ChatPage(props: ChatPageProps) {
     }
   }, [])
 
+  const updateJumpPopoverPosition = useCallback(() => {
+    if (!standaloneSessionWindow) return
+    const anchor = jumpCalendarWrapRef.current
+    if (!anchor) return
+
+    const popoverWidth = 312
+    const viewportGap = 8
+    const anchorRect = anchor.getBoundingClientRect()
+
+    let left = anchorRect.right - popoverWidth
+    left = Math.max(viewportGap, Math.min(left, window.innerWidth - popoverWidth - viewportGap))
+
+    const portalHeight = jumpPopoverPortalRef.current?.offsetHeight || 0
+    const belowTop = anchorRect.bottom + 10
+    let top = belowTop
+    if (portalHeight > 0 && belowTop + portalHeight > window.innerHeight - viewportGap) {
+      top = Math.max(viewportGap, anchorRect.top - portalHeight - 10)
+    }
+
+    setJumpPopoverPosition(prev => {
+      if (prev.top === top && prev.left === left) return prev
+      return { top, left }
+    })
+  }, [standaloneSessionWindow])
+
   const handleToggleJumpPopover = useCallback(() => {
     if (!currentSessionId) return
     if (showJumpPopover) {
@@ -676,9 +703,15 @@ function ChatPage(props: ChatPageProps) {
       return
     }
     setJumpPopoverDate(resolveCurrentViewDate())
+    if (standaloneSessionWindow) {
+      updateJumpPopoverPosition()
+    }
     setShowJumpPopover(true)
+    if (standaloneSessionWindow) {
+      requestAnimationFrame(() => updateJumpPopoverPosition())
+    }
     void loadJumpCalendarData(currentSessionId)
-  }, [currentSessionId, loadJumpCalendarData, resolveCurrentViewDate, showJumpPopover])
+  }, [currentSessionId, loadJumpCalendarData, resolveCurrentViewDate, showJumpPopover, standaloneSessionWindow, updateJumpPopoverPosition])
 
   useEffect(() => {
     const unsubscribe = onExportSessionStatus((payload) => {
@@ -2742,13 +2775,29 @@ function ChatPage(props: ChatPageProps) {
       const target = event.target as Node | null
       if (!target) return
       if (jumpCalendarWrapRef.current?.contains(target)) return
+      if (standaloneSessionWindow && jumpPopoverPortalRef.current?.contains(target)) return
       setShowJumpPopover(false)
     }
     document.addEventListener('mousedown', handleGlobalPointerDown)
     return () => {
       document.removeEventListener('mousedown', handleGlobalPointerDown)
     }
-  }, [showJumpPopover])
+  }, [showJumpPopover, standaloneSessionWindow])
+
+  useEffect(() => {
+    if (!showJumpPopover || !standaloneSessionWindow) return
+    const syncPosition = () => {
+      requestAnimationFrame(() => updateJumpPopoverPosition())
+    }
+
+    syncPosition()
+    window.addEventListener('resize', syncPosition)
+    window.addEventListener('scroll', syncPosition, true)
+    return () => {
+      window.removeEventListener('resize', syncPosition)
+      window.removeEventListener('scroll', syncPosition, true)
+    }
+  }, [showJumpPopover, standaloneSessionWindow, updateJumpPopoverPosition])
 
   useEffect(() => {
     setShowJumpPopover(false)
@@ -3785,18 +3834,45 @@ function ChatPage(props: ChatPageProps) {
                   >
                     <Calendar size={18} />
                   </button>
-                  <JumpToDatePopover
-                    isOpen={showJumpPopover}
-                    currentDate={jumpPopoverDate}
-                    onClose={() => setShowJumpPopover(false)}
-                    onSelect={handleJumpDateSelect}
-                    messageDates={messageDates}
-                    hasLoadedMessageDates={hasLoadedMessageDates}
-                    messageDateCounts={messageDateCounts}
-                    loadingDates={loadingDates}
-                    loadingDateCounts={loadingDateCounts}
-                  />
+                  {!standaloneSessionWindow && (
+                    <JumpToDatePopover
+                      isOpen={showJumpPopover}
+                      currentDate={jumpPopoverDate}
+                      onClose={() => setShowJumpPopover(false)}
+                      onSelect={handleJumpDateSelect}
+                      messageDates={messageDates}
+                      hasLoadedMessageDates={hasLoadedMessageDates}
+                      messageDateCounts={messageDateCounts}
+                      loadingDates={loadingDates}
+                      loadingDateCounts={loadingDateCounts}
+                    />
+                  )}
                 </div>
+                {standaloneSessionWindow && showJumpPopover && createPortal(
+                  <div
+                    ref={jumpPopoverPortalRef}
+                    style={{
+                      position: 'fixed',
+                      top: jumpPopoverPosition.top,
+                      left: jumpPopoverPosition.left,
+                      zIndex: 3600
+                    }}
+                  >
+                    <JumpToDatePopover
+                      isOpen={showJumpPopover}
+                      currentDate={jumpPopoverDate}
+                      onClose={() => setShowJumpPopover(false)}
+                      onSelect={handleJumpDateSelect}
+                      messageDates={messageDates}
+                      hasLoadedMessageDates={hasLoadedMessageDates}
+                      messageDateCounts={messageDateCounts}
+                      loadingDates={loadingDates}
+                      loadingDateCounts={loadingDateCounts}
+                      style={{ position: 'static', top: 'auto', right: 'auto' }}
+                    />
+                  </div>,
+                  document.body
+                )}
                 <button
                   className="icon-btn refresh-messages-btn"
                   onClick={handleRefreshMessages}

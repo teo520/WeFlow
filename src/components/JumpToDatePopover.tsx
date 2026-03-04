@@ -6,6 +6,8 @@ interface JumpToDatePopoverProps {
   isOpen: boolean
   onClose: () => void
   onSelect: (date: Date) => void
+  className?: string
+  style?: React.CSSProperties
   currentDate?: Date
   messageDates?: Set<string>
   hasLoadedMessageDates?: boolean
@@ -18,6 +20,8 @@ const JumpToDatePopover: React.FC<JumpToDatePopoverProps> = ({
   isOpen,
   onClose,
   onSelect,
+  className,
+  style,
   currentDate = new Date(),
   messageDates,
   hasLoadedMessageDates = false,
@@ -107,9 +111,10 @@ const JumpToDatePopover: React.FC<JumpToDatePopoverProps> = ({
 
   const weekdays = ['日', '一', '二', '三', '四', '五', '六']
   const days = generateCalendar()
+  const mergedClassName = ['jump-date-popover', className || ''].join(' ').trim()
 
   return (
-    <div className="jump-date-popover" role="dialog" aria-label="跳转日期">
+    <div className={mergedClassName} style={style} role="dialog" aria-label="跳转日期">
       <div className="calendar-nav">
         <button
           className="nav-btn"
