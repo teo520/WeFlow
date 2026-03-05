@@ -499,6 +499,26 @@ const formatDateInputValue = (date: Date): string => {
   return `${y}-${m}-${d}`
 }
 
+const parseDateInputValue = (raw: string): Date | null => {
+  const text = String(raw || '').trim()
+  const matched = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  if (!matched) return null
+  const year = Number(matched[1])
+  const month = Number(matched[2])
+  const day = Number(matched[3])
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+  const parsed = new Date(year, month - 1, day)
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null
+  }
+  return parsed
+}
+
 const toMonthStart = (date: Date): Date => new Date(date.getFullYear(), date.getMonth(), 1)
 
 const addMonths = (date: Date, delta: number): Date => {
@@ -1212,6 +1232,8 @@ function ExportPage() {
   const [isTimeRangeDialogOpen, setIsTimeRangeDialogOpen] = useState(false)
   const [timeRangePreset, setTimeRangePreset] = useState<DateRangePreset>('all')
   const [timeRangeDialogDraft, setTimeRangeDialogDraft] = useState<TimeRangeDialogDraft | null>(null)
+  const [timeRangeDateInput, setTimeRangeDateInput] = useState<{ start: string; end: string }>({ start: '', end: '' })
+  const [timeRangeDateInputError, setTimeRangeDateInputError] = useState<{ start: boolean; end: boolean }>({ start: false, end: false })
 
   const [options, setOptions] = useState<ExportOptions>({
     format: 'json',
@@ -2321,6 +2343,8 @@ function ExportPage() {
     setExportDialog(prev => ({ ...prev, open: false }))
     setIsTimeRangeDialogOpen(false)
     setTimeRangeDialogDraft(null)
+    setTimeRangeDateInput({ start: '', end: '' })
+    setTimeRangeDateInputError({ start: false, end: false })
   }, [])
 
   const buildTimeRangeDialogDraft = useCallback((): TimeRangeDialogDraft => {
@@ -2338,23 +2362,33 @@ function ExportPage() {
   }, [options.dateRange, options.useAllTime, timeRangePreset])
 
   const openTimeRangeDialog = useCallback(() => {
-    setTimeRangeDialogDraft(buildTimeRangeDialogDraft())
+    const draft = buildTimeRangeDialogDraft()
+    setTimeRangeDialogDraft(draft)
     setIsTimeRangeDialogOpen(true)
   }, [buildTimeRangeDialogDraft])
 
   const closeTimeRangeDialog = useCallback(() => {
     setIsTimeRangeDialogOpen(false)
     setTimeRangeDialogDraft(null)
+    setTimeRangeDateInput({ start: '', end: '' })
+    setTimeRangeDateInputError({ start: false, end: false })
   }, [])
 
   const applyTimeRangePresetToDraft = useCallback((preset: Exclude<DateRangePreset, 'custom'>) => {
     setTimeRangeDialogDraft(prev => {
       const base = prev ?? buildTimeRangeDialogDraft()
       if (preset === 'all') {
+        const previewRange = createDefaultDateRange()
         return {
           ...base,
           preset,
-          useAllTime: true
+          useAllTime: true,
+          dateRange: {
+            start: previewRange.start,
+            end: previewRange.end
+          },
+          startPanelMonth: toMonthStart(previewRange.start),
+          endPanelMonth: toMonthStart(previewRange.end)
         }
       }
       const range = createDateRangeByPreset(preset)
@@ -2371,6 +2405,10 @@ function ExportPage() {
       }
     })
   }, [buildTimeRangeDialogDraft])
+
+  const handleTimeRangePresetClick = useCallback((preset: Exclude<DateRangePreset, 'custom'>) => {
+    applyTimeRangePresetToDraft(preset)
+  }, [applyTimeRangePresetToDraft])
 
   const updateTimeRangeDraftStart = useCallback((targetDate: Date) => {
     const start = startOfDay(targetDate)
@@ -2395,19 +2433,44 @@ function ExportPage() {
     const end = endOfDay(targetDate)
     setTimeRangeDialogDraft(prev => {
       const base = prev ?? buildTimeRangeDialogDraft()
-      const nextEnd = end < base.dateRange.start ? endOfDay(base.dateRange.start) : end
+      const isAllTimeMode = base.useAllTime
+      const nextStart = isAllTimeMode
+        ? startOfDay(targetDate)
+        : base.dateRange.start
+      const nextEnd = end < nextStart ? endOfDay(nextStart) : end
       return {
         ...base,
         preset: 'custom',
         useAllTime: false,
         dateRange: {
-          start: base.dateRange.start,
+          start: nextStart,
           end: nextEnd
         },
+        startPanelMonth: toMonthStart(nextStart),
         endPanelMonth: toMonthStart(nextEnd)
       }
     })
   }, [buildTimeRangeDialogDraft])
+
+  const commitTimeRangeStartFromInput = useCallback(() => {
+    const parsed = parseDateInputValue(timeRangeDateInput.start)
+    if (!parsed) {
+      setTimeRangeDateInputError(prev => ({ ...prev, start: true }))
+      return
+    }
+    setTimeRangeDateInputError(prev => ({ ...prev, start: false }))
+    updateTimeRangeDraftStart(parsed)
+  }, [timeRangeDateInput.start, updateTimeRangeDraftStart])
+
+  const commitTimeRangeEndFromInput = useCallback(() => {
+    const parsed = parseDateInputValue(timeRangeDateInput.end)
+    if (!parsed) {
+      setTimeRangeDateInputError(prev => ({ ...prev, end: true }))
+      return
+    }
+    setTimeRangeDateInputError(prev => ({ ...prev, end: false }))
+    updateTimeRangeDraftEnd(parsed)
+  }, [timeRangeDateInput.end, updateTimeRangeDraftEnd])
 
   const shiftTimeRangePanelMonth = useCallback((panel: 'start' | 'end', delta: number) => {
     setTimeRangeDialogDraft(prev => {
@@ -2445,7 +2508,7 @@ function ExportPage() {
     if (timeRangePreset === 'yesterday') return '昨天'
     if (timeRangePreset === 'last3days') return '最近3天'
     if (timeRangePreset === 'last7days') return '最近一周'
-    if (timeRangePreset === 'last30days') return '最近一个月'
+    if (timeRangePreset === 'last30days') return '最近30 天'
     if (timeRangePreset === 'last1year') return '最近一年'
     if (timeRangePreset === 'last2years') return '最近两年'
     if (options.dateRange) {
@@ -2455,6 +2518,23 @@ function ExportPage() {
   }, [options.useAllTime, options.dateRange, timeRangePreset])
 
   const activeTimeRangeDialogDraft = timeRangeDialogDraft ?? buildTimeRangeDialogDraft()
+  const isRangeModeActive = !activeTimeRangeDialogDraft.useAllTime
+  const timeRangeModeText = isRangeModeActive
+    ? '当前导出模式：按时间范围导出'
+    : '当前导出模式：全部时间导出（选择下方日期将切换为按时间范围导出）'
+
+  useEffect(() => {
+    if (!isTimeRangeDialogOpen) return
+    setTimeRangeDateInput({
+      start: formatDateInputValue(activeTimeRangeDialogDraft.dateRange.start),
+      end: formatDateInputValue(activeTimeRangeDialogDraft.dateRange.end)
+    })
+    setTimeRangeDateInputError({ start: false, end: false })
+  }, [
+    isTimeRangeDialogOpen,
+    activeTimeRangeDialogDraft.dateRange.start.getTime(),
+    activeTimeRangeDialogDraft.dateRange.end.getTime()
+  ])
 
   const isTimeRangePresetActive = useCallback((preset: DateRangePreset): boolean => {
     if (preset === 'all') return activeTimeRangeDialogDraft.useAllTime
@@ -4696,9 +4776,8 @@ function ExportPage() {
                       { value: 'yesterday', label: '昨天' },
                       { value: 'last3days', label: '最近3天' },
                       { value: 'last7days', label: '最近一周' },
-                      { value: 'last30days', label: '最近一个月' },
-                      { value: 'last1year', label: '最近一年' },
-                      { value: 'last2years', label: '最近两年' }
+                      { value: 'last30days', label: '最近30 天' },
+                      { value: 'last1year', label: '最近一年' }
                     ] as Array<{ value: Exclude<DateRangePreset, 'custom'>; label: string }>).map((preset) => {
                       const isActive = isTimeRangePresetActive(preset.value)
                       return (
@@ -4706,7 +4785,7 @@ function ExportPage() {
                           key={preset.value}
                           type="button"
                           className={`time-range-preset-item ${isActive ? 'active' : ''}`}
-                          onClick={() => applyTimeRangePresetToDraft(preset.value)}
+                          onClick={() => handleTimeRangePresetClick(preset.value)}
                         >
                           <span>{preset.label}</span>
                           {isActive && <Check size={14} />}
@@ -4715,12 +4794,36 @@ function ExportPage() {
                     })}
                   </div>
 
+                  <div className={`time-range-mode-banner ${isRangeModeActive ? 'range' : 'all'}`}>
+                    {timeRangeModeText}
+                  </div>
+
                   <div className="time-range-calendar-grid">
                     <section className="time-range-calendar-panel">
                       <div className="time-range-calendar-panel-header">
                         <div className="time-range-calendar-date-label">
                           <span>起始日期</span>
-                          <strong>{formatDateInputValue(activeTimeRangeDialogDraft.dateRange.start)}</strong>
+                          <input
+                            type="text"
+                            className={`time-range-date-input ${timeRangeDateInputError.start ? 'invalid' : ''}`}
+                            value={timeRangeDateInput.start}
+                            placeholder="YYYY-MM-DD"
+                            onChange={(event) => {
+                              const nextValue = event.target.value
+                              setTimeRangeDateInput(prev => ({ ...prev, start: nextValue }))
+                              if (timeRangeDateInputError.start) {
+                                setTimeRangeDateInputError(prev => ({ ...prev, start: false }))
+                              }
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Enter') return
+                              event.preventDefault()
+                              commitTimeRangeStartFromInput()
+                            }}
+                            onBlur={() => {
+                              commitTimeRangeStartFromInput()
+                            }}
+                          />
                         </div>
                         <div className="time-range-calendar-nav">
                           <button type="button" onClick={() => shiftTimeRangePanelMonth('start', -1)} aria-label="上个月">‹</button>
@@ -4735,7 +4838,8 @@ function ExportPage() {
                       </div>
                       <div className="time-range-calendar-days">
                         {startPanelCells.map((cell) => {
-                          const isSelected = isSameDay(cell.date, activeTimeRangeDialogDraft.dateRange.start)
+                          const isSelected = !activeTimeRangeDialogDraft.useAllTime &&
+                            isSameDay(cell.date, activeTimeRangeDialogDraft.dateRange.start)
                           return (
                             <button
                               key={`start-${cell.date.getTime()}`}
@@ -4754,7 +4858,27 @@ function ExportPage() {
                       <div className="time-range-calendar-panel-header">
                         <div className="time-range-calendar-date-label">
                           <span>截止日期</span>
-                          <strong>{formatDateInputValue(activeTimeRangeDialogDraft.dateRange.end)}</strong>
+                          <input
+                            type="text"
+                            className={`time-range-date-input ${timeRangeDateInputError.end ? 'invalid' : ''}`}
+                            value={timeRangeDateInput.end}
+                            placeholder="YYYY-MM-DD"
+                            onChange={(event) => {
+                              const nextValue = event.target.value
+                              setTimeRangeDateInput(prev => ({ ...prev, end: nextValue }))
+                              if (timeRangeDateInputError.end) {
+                                setTimeRangeDateInputError(prev => ({ ...prev, end: false }))
+                              }
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Enter') return
+                              event.preventDefault()
+                              commitTimeRangeEndFromInput()
+                            }}
+                            onBlur={() => {
+                              commitTimeRangeEndFromInput()
+                            }}
+                          />
                         </div>
                         <div className="time-range-calendar-nav">
                           <button type="button" onClick={() => shiftTimeRangePanelMonth('end', -1)} aria-label="上个月">‹</button>
@@ -4769,7 +4893,8 @@ function ExportPage() {
                       </div>
                       <div className="time-range-calendar-days">
                         {endPanelCells.map((cell) => {
-                          const isSelected = isSameDay(cell.date, activeTimeRangeDialogDraft.dateRange.end)
+                          const isSelected = !activeTimeRangeDialogDraft.useAllTime &&
+                            isSameDay(cell.date, activeTimeRangeDialogDraft.dateRange.end)
                           return (
                             <button
                               key={`end-${cell.date.getTime()}`}
@@ -4784,12 +4909,6 @@ function ExportPage() {
                       </div>
                     </section>
                   </div>
-
-                  {activeTimeRangeDialogDraft.useAllTime && (
-                    <div className="time-range-full-hint">
-                      已选择“全部时间”，确认后会按默认导出全部时间；下方日期仅用于切换为自定义范围时预览。
-                    </div>
-                  )}
 
                   <div className="time-range-dialog-actions">
                     <button type="button" className="secondary-btn" onClick={closeTimeRangeDialog}>
