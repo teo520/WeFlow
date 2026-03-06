@@ -220,6 +220,29 @@
     background: var(--bg-primary);
   }
 
+  .media-default-grid {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    margin-bottom: 10px;
+
+    label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 0;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+      cursor: pointer;
+    }
+
+    input {
+      margin: 0;
+    }
+  }
+
   .log-status {
     font-size: 13px;
     color: var(--text-secondary);
@@ -354,6 +377,11 @@
       margin-bottom: 0;
     }
 
+    .media-default-grid {
+      max-width: 360px;
+      margin-bottom: 0;
+    }
+
     .concurrency-inline-options {
       max-width: 360px;
       margin-bottom: 0;
@@ -391,6 +419,7 @@
     .select-field,
     .settings-time-range-field,
     .log-toggle-line,
+    .media-default-grid,
     .concurrency-inline-options,
     .format-grid {
       max-width: none;

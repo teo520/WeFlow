@@ -78,6 +78,20 @@ export interface WxidConfig {
   updatedAt?: number
 }
 
+export interface ExportDefaultMediaConfig {
+  images: boolean
+  videos: boolean
+  voices: boolean
+  emojis: boolean
+}
+
+const DEFAULT_EXPORT_MEDIA_CONFIG: ExportDefaultMediaConfig = {
+  images: true,
+  videos: true,
+  voices: true,
+  emojis: true
+}
+
 // 获取解密密钥
 export async function getDecryptKey(): Promise<string | null> {
   const value = await config.get(CONFIG_KEYS.DECRYPT_KEY)
@@ -364,15 +378,36 @@ export async function setExportDefaultDateRange(range: ExportDefaultDateRangeCon
 }
 
 // 获取导出默认媒体设置
-export async function getExportDefaultMedia(): Promise<boolean | null> {
+export async function getExportDefaultMedia(): Promise<ExportDefaultMediaConfig | null> {
   const value = await config.get(CONFIG_KEYS.EXPORT_DEFAULT_MEDIA)
-  if (typeof value === 'boolean') return value
+  if (typeof value === 'boolean') {
+    return {
+      images: value,
+      videos: value,
+      voices: value,
+      emojis: value
+    }
+  }
+  if (value && typeof value === 'object') {
+    const raw = value as Partial<Record<keyof ExportDefaultMediaConfig, unknown>>
+    return {
+      images: typeof raw.images === 'boolean' ? raw.images : DEFAULT_EXPORT_MEDIA_CONFIG.images,
+      videos: typeof raw.videos === 'boolean' ? raw.videos : DEFAULT_EXPORT_MEDIA_CONFIG.videos,
+      voices: typeof raw.voices === 'boolean' ? raw.voices : DEFAULT_EXPORT_MEDIA_CONFIG.voices,
+      emojis: typeof raw.emojis === 'boolean' ? raw.emojis : DEFAULT_EXPORT_MEDIA_CONFIG.emojis
+    }
+  }
   return null
 }
 
 // 设置导出默认媒体设置
-export async function setExportDefaultMedia(enabled: boolean): Promise<void> {
-  await config.set(CONFIG_KEYS.EXPORT_DEFAULT_MEDIA, enabled)
+export async function setExportDefaultMedia(media: ExportDefaultMediaConfig): Promise<void> {
+  await config.set(CONFIG_KEYS.EXPORT_DEFAULT_MEDIA, {
+    images: media.images,
+    videos: media.videos,
+    voices: media.voices,
+    emojis: media.emojis
+  })
 }
 
 // 获取导出默认语音转文字

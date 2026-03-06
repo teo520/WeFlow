@@ -1288,7 +1288,12 @@ function ExportPage() {
   const [exportDefaultFormat, setExportDefaultFormat] = useState<TextExportFormat>('excel')
   const [exportDefaultAvatars, setExportDefaultAvatars] = useState(true)
   const [exportDefaultDateRangeSelection, setExportDefaultDateRangeSelection] = useState<ExportDateRangeSelection>(() => createDefaultExportDateRangeSelection())
-  const [exportDefaultMedia, setExportDefaultMedia] = useState(false)
+  const [exportDefaultMedia, setExportDefaultMedia] = useState<configService.ExportDefaultMediaConfig>({
+    images: true,
+    videos: true,
+    voices: true,
+    emojis: true
+  })
   const [exportDefaultVoiceAsText, setExportDefaultVoiceAsText] = useState(false)
   const [exportDefaultExcelCompactColumns, setExportDefaultExcelCompactColumns] = useState(true)
   const [exportDefaultConcurrency, setExportDefaultConcurrency] = useState(2)
@@ -1301,11 +1306,11 @@ function ExportPage() {
     },
     useAllTime: false,
     exportAvatars: true,
-    exportMedia: false,
+    exportMedia: true,
     exportImages: true,
     exportVoices: true,
     exportVideos: true,
-    exportEmojis: true,
+        exportEmojis: true,
     exportVoiceAsText: false,
     excelCompactColumns: true,
     txtColumns: defaultTxtColumns,
@@ -1831,7 +1836,12 @@ function ExportPage() {
       setLastSnsExportPostCount(savedSnsPostCount)
       setExportDefaultFormat((savedFormat as TextExportFormat) || 'excel')
       setExportDefaultAvatars(savedAvatars ?? true)
-      setExportDefaultMedia(savedMedia ?? false)
+      setExportDefaultMedia(savedMedia ?? {
+        images: true,
+        videos: true,
+        voices: true,
+        emojis: true
+      })
       setExportDefaultVoiceAsText(savedVoiceAsText ?? false)
       setExportDefaultExcelCompactColumns(savedExcelCompactColumns ?? true)
       setExportDefaultConcurrency(savedConcurrency ?? 2)
@@ -1854,7 +1864,16 @@ function ExportPage() {
         ...prev,
         format: ((savedFormat as TextExportFormat) || 'excel'),
         exportAvatars: savedAvatars ?? true,
-        exportMedia: savedMedia ?? prev.exportMedia,
+        exportMedia: Boolean(
+          (savedMedia?.images ?? prev.exportImages) ||
+          (savedMedia?.voices ?? prev.exportVoices) ||
+          (savedMedia?.videos ?? prev.exportVideos) ||
+          (savedMedia?.emojis ?? prev.exportEmojis)
+        ),
+        exportImages: savedMedia?.images ?? prev.exportImages,
+        exportVoices: savedMedia?.voices ?? prev.exportVoices,
+        exportVideos: savedMedia?.videos ?? prev.exportVideos,
+        exportEmojis: savedMedia?.emojis ?? prev.exportEmojis,
         exportVoiceAsText: savedVoiceAsText ?? prev.exportVoiceAsText,
         excelCompactColumns: savedExcelCompactColumns ?? prev.excelCompactColumns,
         txtColumns,
@@ -3214,7 +3233,16 @@ function ExportPage() {
         exportAvatars: exportDefaultAvatars,
         useAllTime: exportDefaultDateRangeSelection.useAllTime,
         dateRange: nextDateRange,
-        exportMedia: exportDefaultMedia,
+        exportMedia: Boolean(
+          exportDefaultMedia.images ||
+          exportDefaultMedia.voices ||
+          exportDefaultMedia.videos ||
+          exportDefaultMedia.emojis
+        ),
+        exportImages: exportDefaultMedia.images,
+        exportVoices: exportDefaultMedia.voices,
+        exportVideos: exportDefaultMedia.videos,
+        exportEmojis: exportDefaultMedia.emojis,
         exportVoiceAsText: exportDefaultVoiceAsText,
         excelCompactColumns: exportDefaultExcelCompactColumns,
         exportConcurrency: exportDefaultConcurrency
@@ -3772,7 +3800,12 @@ function ExportPage() {
 
     await configService.setExportDefaultFormat(options.format)
     await configService.setExportDefaultAvatars(options.exportAvatars)
-    await configService.setExportDefaultMedia(Boolean(options.exportImages || options.exportVoices || options.exportVideos || options.exportEmojis))
+    await configService.setExportDefaultMedia({
+      images: options.exportImages,
+      voices: options.exportVoices,
+      videos: options.exportVideos,
+      emojis: options.exportEmojis
+    })
     await configService.setExportDefaultVoiceAsText(options.exportVoiceAsText)
     await configService.setExportDefaultExcelCompactColumns(options.excelCompactColumns)
     await configService.setExportDefaultTxtColumns(options.txtColumns)
@@ -5215,8 +5248,17 @@ function ExportPage() {
     if (patch.dateRange) {
       setExportDefaultDateRangeSelection(patch.dateRange)
     }
-    if (typeof patch.media === 'boolean') {
-      setExportDefaultMedia(patch.media)
+    if (patch.media) {
+      const mediaPatch = patch.media
+      setExportDefaultMedia(mediaPatch)
+      setOptions(prev => ({
+        ...prev,
+        exportMedia: Boolean(mediaPatch.images || mediaPatch.voices || mediaPatch.videos || mediaPatch.emojis),
+        exportImages: mediaPatch.images,
+        exportVoices: mediaPatch.voices,
+        exportVideos: mediaPatch.videos,
+        exportEmojis: mediaPatch.emojis
+      }))
     }
     if (typeof patch.voiceAsText === 'boolean') {
       setExportDefaultVoiceAsText(patch.voiceAsText)

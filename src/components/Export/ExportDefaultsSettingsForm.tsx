@@ -15,7 +15,7 @@ export interface ExportDefaultsSettingsPatch {
   format?: string
   avatars?: boolean
   dateRange?: ExportDateRangeSelection
-  media?: boolean
+  media?: configService.ExportDefaultMediaConfig
   voiceAsText?: boolean
   excelCompactColumns?: boolean
   concurrency?: number
@@ -62,7 +62,12 @@ export function ExportDefaultsSettingsForm({
   const [exportDefaultFormat, setExportDefaultFormat] = useState('excel')
   const [exportDefaultAvatars, setExportDefaultAvatars] = useState(true)
   const [exportDefaultDateRange, setExportDefaultDateRange] = useState<ExportDateRangeSelection>(() => createDefaultExportDateRangeSelection())
-  const [exportDefaultMedia, setExportDefaultMedia] = useState(false)
+  const [exportDefaultMedia, setExportDefaultMedia] = useState<configService.ExportDefaultMediaConfig>({
+    images: true,
+    videos: true,
+    voices: true,
+    emojis: true
+  })
   const [exportDefaultVoiceAsText, setExportDefaultVoiceAsText] = useState(false)
   const [exportDefaultExcelCompactColumns, setExportDefaultExcelCompactColumns] = useState(true)
   const [exportDefaultConcurrency, setExportDefaultConcurrency] = useState(2)
@@ -85,7 +90,12 @@ export function ExportDefaultsSettingsForm({
       setExportDefaultFormat(savedFormat || 'excel')
       setExportDefaultAvatars(savedAvatars ?? true)
       setExportDefaultDateRange(resolveExportDateRangeConfig(savedDateRange))
-      setExportDefaultMedia(savedMedia ?? false)
+      setExportDefaultMedia(savedMedia ?? {
+        images: true,
+        videos: true,
+        voices: true,
+        emojis: true
+      })
       setExportDefaultVoiceAsText(savedVoiceAsText ?? false)
       setExportDefaultExcelCompactColumns(savedExcelCompactColumns ?? true)
       setExportDefaultConcurrency(savedConcurrency ?? 2)
@@ -237,27 +247,66 @@ export function ExportDefaultsSettingsForm({
 
       <div className="form-group">
         <div className="form-copy">
-          <label>默认导出媒体文件</label>
-          <span className="form-hint">控制图片/语音/表情的默认导出开关</span>
+          <label>默认导出媒体内容</label>
+          <span className="form-hint">控制图片、视频、语音、表情包的默认导出开关</span>
         </div>
         <div className="form-control">
-          <div className="log-toggle-line">
-            <span className="log-status">{exportDefaultMedia ? '已开启' : '已关闭'}</span>
-            <label className="switch" htmlFor="shared-export-default-media">
+          <div className="media-default-grid">
+            <label>
               <input
-                id="shared-export-default-media"
-                className="switch-input"
                 type="checkbox"
-                checked={exportDefaultMedia}
+                checked={exportDefaultMedia.images}
                 onChange={async (e) => {
-                  const enabled = e.target.checked
-                  setExportDefaultMedia(enabled)
-                  await configService.setExportDefaultMedia(enabled)
-                  onDefaultsChanged?.({ media: enabled })
-                  notify(enabled ? '已开启默认媒体导出' : '已关闭默认媒体导出', true)
+                  const next = { ...exportDefaultMedia, images: e.target.checked }
+                  setExportDefaultMedia(next)
+                  await configService.setExportDefaultMedia(next)
+                  onDefaultsChanged?.({ media: next })
+                  notify(`已${e.target.checked ? '开启' : '关闭'}默认导出图片`, true)
                 }}
               />
-              <span className="switch-slider" />
+              图片
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={exportDefaultMedia.voices}
+                onChange={async (e) => {
+                  const next = { ...exportDefaultMedia, voices: e.target.checked }
+                  setExportDefaultMedia(next)
+                  await configService.setExportDefaultMedia(next)
+                  onDefaultsChanged?.({ media: next })
+                  notify(`已${e.target.checked ? '开启' : '关闭'}默认导出语音`, true)
+                }}
+              />
+              语音
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={exportDefaultMedia.videos}
+                onChange={async (e) => {
+                  const next = { ...exportDefaultMedia, videos: e.target.checked }
+                  setExportDefaultMedia(next)
+                  await configService.setExportDefaultMedia(next)
+                  onDefaultsChanged?.({ media: next })
+                  notify(`已${e.target.checked ? '开启' : '关闭'}默认导出视频`, true)
+                }}
+              />
+              视频
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={exportDefaultMedia.emojis}
+                onChange={async (e) => {
+                  const next = { ...exportDefaultMedia, emojis: e.target.checked }
+                  setExportDefaultMedia(next)
+                  await configService.setExportDefaultMedia(next)
+                  onDefaultsChanged?.({ media: next })
+                  notify(`已${e.target.checked ? '开启' : '关闭'}默认导出表情包`, true)
+                }}
+              />
+              表情包
             </label>
           </div>
         </div>
