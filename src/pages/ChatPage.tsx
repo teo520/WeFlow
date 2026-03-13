@@ -5506,8 +5506,9 @@ function MessageBubble({
     let finalImagePath = imageLocalPath
     let finalLiveVideoPath = imageLiveVideoPath || undefined
 
-    // If current cache is a thumbnail, wait for a silent force-HD decrypt before opening viewer.
-    if (imageHasUpdate) {
+    // Every explicit preview click re-runs the forced HD search/decrypt path so
+    // users don't need to re-enter the session after WeChat materializes a new original image.
+    if (message.imageMd5 || message.imageDatName) {
       try {
         const upgraded = await requestImageDecrypt(true, true)
         if (upgraded?.success && upgraded.localPath) {
@@ -5539,7 +5540,6 @@ function MessageBubble({
 
     void window.electronAPI.window.openImageViewerWindow(finalImagePath, finalLiveVideoPath)
   }, [
-    imageHasUpdate,
     imageLiveVideoPath,
     imageLocalPath,
     imageCacheKey,
