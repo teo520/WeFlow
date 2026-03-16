@@ -1949,6 +1949,18 @@ function registerIpcHandlers() {
     return groupAnalyticsService.getGroupMediaStats(chatroomId, startTime, endTime)
   })
 
+  ipcMain.handle(
+    'groupAnalytics:getGroupMemberMessages',
+    async (
+      _,
+      chatroomId: string,
+      memberUsername: string,
+      options?: { startTime?: number; endTime?: number; limit?: number; cursor?: number }
+    ) => {
+      return groupAnalyticsService.getGroupMemberMessages(chatroomId, memberUsername, options)
+    }
+  )
+
   ipcMain.handle('groupAnalytics:exportGroupMembers', async (_, chatroomId: string, outputPath: string) => {
     return groupAnalyticsService.exportGroupMembers(chatroomId, outputPath)
   })

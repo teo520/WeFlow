@@ -49,6 +49,12 @@ export interface GroupMediaStats {
   total: number
 }
 
+export interface GroupMemberMessagesPage {
+  messages: Message[]
+  hasMore: boolean
+  nextCursor: number
+}
+
 interface GroupMemberContactInfo {
   remark: string
   nickName: string
@@ -769,6 +775,100 @@ class GroupAnalyticsService {
     }
 
     return { success: true, data: matchedMessages }
+  }
+
+  async getGroupMemberMessages(
+    chatroomId: string,
+    memberUsername: string,
+    options?: { startTime?: number; endTime?: number; limit?: number; cursor?: number }
+  ): Promise<{ success: boolean; data?: GroupMemberMessagesPage; error?: string }> {
+    try {
+      const conn = await this.ensureConnected()
+      if (!conn.success) return { success: false, error: conn.error }
+
+      const normalizedChatroomId = String(chatroomId || '').trim()
+      const normalizedMemberUsername = String(memberUsername || '').trim()
+      if (!normalizedChatroomId) return { success: false, error: '群聊ID不能为空' }
+      if (!normalizedMemberUsername) return { success: false, error: '成员ID不能为空' }
+
+      const startTimeValue = Number.isFinite(options?.startTime) && typeof options?.startTime === 'number'
+        ? Math.max(0, Math.floor(options.startTime))
+        : 0
+      const endTimeValue = Number.isFinite(options?.endTime) && typeof options?.endTime === 'number'
+        ? Math.max(0, Math.floor(options.endTime))
+        : 0
+      const limit = Number.isFinite(options?.limit) && typeof options?.limit === 'number'
+        ? Math.max(1, Math.min(100, Math.floor(options.limit)))
+        : 50
+      let cursor = Number.isFinite(options?.cursor) && typeof options?.cursor === 'number'
+        ? Math.max(0, Math.floor(options.cursor))
+        : 0
+
+      const matchedMessages: Message[] = []
+      const batchSize = Math.max(limit * 2, 100)
+      let hasMore = false
+
+      while (matchedMessages.length < limit) {
+        const batch = await chatService.getMessages(
+          normalizedChatroomId,
+          cursor,
+          batchSize,
+          startTimeValue,
+          endTimeValue,
+          false
+        )
+        if (!batch.success || !batch.messages) {
+          return { success: false, error: batch.error || '获取群成员消息失败' }
+        }
+
+        const currentMessages = batch.messages
+        const nextCursor = typeof batch.nextOffset === 'number'
+          ? Math.max(cursor, Math.floor(batch.nextOffset))
+          : cursor + currentMessages.length
+
+        let overflowMatchFound = false
+        for (const message of currentMessages) {
+          if (!this.isSameAccountIdentity(normalizedMemberUsername, message.senderUsername)) {
+            continue
+          }
+
+          if (matchedMessages.length < limit) {
+            matchedMessages.push(message)
+          } else {
+            overflowMatchFound = true
+            break
+          }
+        }
+
+        cursor = nextCursor
+
+        if (overflowMatchFound) {
+          hasMore = true
+          break
+        }
+
+        if (currentMessages.length === 0 || !batch.hasMore) {
+          hasMore = false
+          break
+        }
+
+        if (matchedMessages.length >= limit) {
+          hasMore = true
+          break
+        }
+      }
+
+      return {
+        success: true,
+        data: {
+          messages: matchedMessages,
+          hasMore,
+          nextCursor: cursor
+        }
+      }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
   }
 
   async getGroupChats(): Promise<{ success: boolean; data?: GroupChatInfo[]; error?: string }> {

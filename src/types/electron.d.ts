@@ -494,6 +494,19 @@ export interface ElectronAPI {
       }
       error?: string
     }>
+    getGroupMemberMessages: (
+      chatroomId: string,
+      memberUsername: string,
+      options?: { startTime?: number; endTime?: number; limit?: number; cursor?: number }
+    ) => Promise<{
+      success: boolean
+      data?: {
+        messages: Message[]
+        hasMore: boolean
+        nextCursor: number
+      }
+      error?: string
+    }>
     exportGroupMembers: (chatroomId: string, outputPath: string) => Promise<{
       success: boolean
       count?: number
