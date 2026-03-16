@@ -87,6 +87,7 @@ export class KeyServiceLinux {
         const command = `"${helperPath}" db_hook ${pid} ${targetAddr}`
 
         sudo.exec(command, options, (error, stdout) => {
+          execAsync(`kill -CONT ${pid}`).catch(() => {})
           if (error) {
             resolve({ success: false, error: `授权失败或被取消: ${error.message}` })
             return
