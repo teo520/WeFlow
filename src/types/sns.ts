@@ -34,6 +34,17 @@ export interface SnsComment {
     emojis?: SnsCommentEmoji[]
 }
 
+export interface SnsLocation {
+    latitude?: number
+    longitude?: number
+    city?: string
+    country?: string
+    poiName?: string
+    poiAddress?: string
+    poiAddressName?: string
+    label?: string
+}
+
 export interface SnsPost {
     id: string
     tid?: string       // 数据库主键（雪花 ID），用于精确删除
@@ -46,6 +57,7 @@ export interface SnsPost {
     media: SnsMedia[]
     likes: string[]
     comments: SnsComment[]
+    location?: SnsLocation
     rawXml?: string
     linkTitle?: string
     linkUrl?: string

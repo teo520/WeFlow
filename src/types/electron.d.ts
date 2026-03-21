@@ -61,6 +61,7 @@ export interface ElectronAPI {
     ignoreUpdate: (version: string) => Promise<{ success: boolean }>
     onDownloadProgress: (callback: (progress: number) => void) => () => void
     onUpdateAvailable: (callback: (info: { version: string; releaseNotes: string }) => void) => () => void
+    checkWayland: () => Promise<boolean>
   }
   notification: {
     show: (data: { title: string; content: string; avatarUrl?: string; sessionId: string }) => Promise<{ success?: boolean; error?: string } | void>
@@ -790,6 +791,16 @@ export interface ElectronAPI {
         }>
         likes: Array<string>
         comments: Array<{ id: string; nickname: string; content: string; refCommentId: string; refNickname?: string; emojis?: Array<{ url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }> }>
+        location?: {
+          latitude?: number
+          longitude?: number
+          city?: string
+          country?: string
+          poiName?: string
+          poiAddress?: string
+          poiAddressName?: string
+          label?: string
+        }
         rawXml?: string
       }>
       error?: string

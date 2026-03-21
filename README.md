@@ -104,13 +104,7 @@ npm install
 # 3. 运行应用（开发模式）
 npm run dev
 
-# 4. 打包可执行文件
-npm run build
 ```
-
-打包产物在 `release` 目录下。
-
-
 
 ## 致谢
 

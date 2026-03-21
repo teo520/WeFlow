@@ -27,6 +27,17 @@ export interface SnsMedia {
     livePhoto?: SnsLivePhoto
 }
 
+export interface SnsLocation {
+    latitude?: number
+    longitude?: number
+    city?: string
+    country?: string
+    poiName?: string
+    poiAddress?: string
+    poiAddressName?: string
+    label?: string
+}
+
 export interface SnsPost {
     id: string
     tid?: string       // 数据库主键（雪花 ID），用于精确删除
@@ -39,6 +50,7 @@ export interface SnsPost {
     media: SnsMedia[]
     likes: string[]
     comments: { id: string; nickname: string; content: string; refCommentId: string; refNickname?: string; emojis?: { url: string; md5: string; width: number; height: number; encryptUrl?: string; aesKey?: string }[] }[]
+    location?: SnsLocation
     rawXml?: string
     linkTitle?: string
     linkUrl?: string
@@ -285,6 +297,17 @@ function parseCommentsFromXml(xml: string): ParsedCommentItem[] {
     }
 
     return comments
+}
+
+const decodeXmlText = (text: string): string => {
+    if (!text) return ''
+    return text
+        .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
 }
 
 class SnsService {
@@ -647,6 +670,110 @@ class SnsService {
         return { media, videoKey }
     }
 
+    private toOptionalNumber(value: unknown): number | undefined {
+        if (typeof value === 'number' && Number.isFinite(value)) return value
+        if (typeof value !== 'string') return undefined
+        const trimmed = value.trim()
+        if (!trimmed) return undefined
+        const parsed = Number.parseFloat(trimmed)
+        return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    private normalizeLocation(input: unknown): SnsLocation | undefined {
+        if (!input || typeof input !== 'object') return undefined
+
+        const row = input as Record<string, unknown>
+        const normalizeText = (value: unknown): string | undefined => {
+            if (typeof value !== 'string') return undefined
+            return this.toOptionalString(decodeXmlText(value))
+        }
+
+        const location: SnsLocation = {}
+        const latitude = this.toOptionalNumber(row.latitude ?? row.lat ?? row.x)
+        const longitude = this.toOptionalNumber(row.longitude ?? row.lng ?? row.y)
+        const city = normalizeText(row.city)
+        const country = normalizeText(row.country)
+        const poiName = normalizeText(row.poiName ?? row.poiname)
+        const poiAddress = normalizeText(row.poiAddress ?? row.poiaddress)
+        const poiAddressName = normalizeText(row.poiAddressName ?? row.poiaddressname)
+        const label = normalizeText(row.label)
+
+        if (latitude !== undefined) location.latitude = latitude
+        if (longitude !== undefined) location.longitude = longitude
+        if (city) location.city = city
+        if (country) location.country = country
+        if (poiName) location.poiName = poiName
+        if (poiAddress) location.poiAddress = poiAddress
+        if (poiAddressName) location.poiAddressName = poiAddressName
+        if (label) location.label = label
+
+        return Object.keys(location).length > 0 ? location : undefined
+    }
+
+    private parseLocationFromXml(xml: string): SnsLocation | undefined {
+        if (!xml) return undefined
+
+        try {
+            const locationTagMatch = xml.match(/<location\b([^>]*)>/i)
+            const locationAttrs = locationTagMatch?.[1] || ''
+            const readAttr = (name: string): string | undefined => {
+                if (!locationAttrs) return undefined
+                const match = locationAttrs.match(new RegExp(`${name}\\s*=\\s*["']([\\s\\S]*?)["']`, 'i'))
+                if (!match?.[1]) return undefined
+                return this.toOptionalString(decodeXmlText(match[1]))
+            }
+            const readTag = (name: string): string | undefined => {
+                const match = xml.match(new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`, 'i'))
+                if (!match?.[1]) return undefined
+                return this.toOptionalString(decodeXmlText(match[1]))
+            }
+
+            const location: SnsLocation = {}
+            const latitude = this.toOptionalNumber(readAttr('latitude') || readAttr('x') || readTag('latitude') || readTag('x'))
+            const longitude = this.toOptionalNumber(readAttr('longitude') || readAttr('y') || readTag('longitude') || readTag('y'))
+            const city = readAttr('city') || readTag('city')
+            const country = readAttr('country') || readTag('country')
+            const poiName = readAttr('poiName') || readAttr('poiname') || readTag('poiName') || readTag('poiname')
+            const poiAddress = readAttr('poiAddress') || readAttr('poiaddress') || readTag('poiAddress') || readTag('poiaddress')
+            const poiAddressName = readAttr('poiAddressName') || readAttr('poiaddressname') || readTag('poiAddressName') || readTag('poiaddressname')
+            const label = readAttr('label') || readTag('label')
+
+            if (latitude !== undefined) location.latitude = latitude
+            if (longitude !== undefined) location.longitude = longitude
+            if (city) location.city = city
+            if (country) location.country = country
+            if (poiName) location.poiName = poiName
+            if (poiAddress) location.poiAddress = poiAddress
+            if (poiAddressName) location.poiAddressName = poiAddressName
+            if (label) location.label = label
+
+            return Object.keys(location).length > 0 ? location : undefined
+        } catch (e) {
+            console.error('[SnsService] 解析位置 XML 失败:', e)
+            return undefined
+        }
+    }
+
+    private mergeLocation(primary?: SnsLocation, fallback?: SnsLocation): SnsLocation | undefined {
+        if (!primary && !fallback) return undefined
+
+        const merged: SnsLocation = {}
+        const setValue = <K extends keyof SnsLocation>(key: K, value: SnsLocation[K] | undefined) => {
+            if (value !== undefined) merged[key] = value
+        }
+
+        setValue('latitude', primary?.latitude ?? fallback?.latitude)
+        setValue('longitude', primary?.longitude ?? fallback?.longitude)
+        setValue('city', primary?.city ?? fallback?.city)
+        setValue('country', primary?.country ?? fallback?.country)
+        setValue('poiName', primary?.poiName ?? fallback?.poiName)
+        setValue('poiAddress', primary?.poiAddress ?? fallback?.poiAddress)
+        setValue('poiAddressName', primary?.poiAddressName ?? fallback?.poiAddressName)
+        setValue('label', primary?.label ?? fallback?.label)
+
+        return Object.keys(merged).length > 0 ? merged : undefined
+    }
+
     private getSnsCacheDir(): string {
         const cachePath = this.configService.getCacheBasePath()
         const snsCacheDir = join(cachePath, 'sns_cache')
@@ -948,7 +1075,12 @@ class SnsService {
         const enrichedTimeline = result.timeline.map((post: any) => {
             const contact = this.contactCache.get(post.username)
             const isVideoPost = post.type === 15
-            const videoKey = extractVideoKey(post.rawXml || '')
+            const rawXml = post.rawXml || ''
+            const videoKey = extractVideoKey(rawXml)
+            const location = this.mergeLocation(
+                this.normalizeLocation((post as { location?: unknown }).location),
+                this.parseLocationFromXml(rawXml)
+            )
 
             const fixedMedia = (post.media || []).map((m: any) => ({
                 url: fixSnsUrl(m.url, m.token, isVideoPost),
@@ -971,7 +1103,6 @@ class SnsService {
             // 如果 DLL 评论缺少表情包信息，回退到从 rawXml 重新解析
             const dllComments: any[] = post.comments || []
             const hasEmojisInDll = dllComments.some((c: any) => c.emojis && c.emojis.length > 0)
-            const rawXml = post.rawXml || ''
 
             let finalComments: any[]
             if (dllComments.length > 0 && (hasEmojisInDll || !rawXml)) {
@@ -990,7 +1121,8 @@ class SnsService {
                 avatarUrl: contact?.avatarUrl,
                 nickname: post.nickname || contact?.displayName || post.username,
                 media: fixedMedia,
-                comments: finalComments
+                comments: finalComments,
+                location
             }
         })
 
@@ -1346,6 +1478,7 @@ class SnsService {
                         })),
                         likes: p.likes,
                         comments: p.comments,
+                        location: p.location,
                         linkTitle: (p as any).linkTitle,
                         linkUrl: (p as any).linkUrl
                     }))
@@ -1397,6 +1530,7 @@ class SnsService {
                         })),
                         likes: post.likes,
                         comments: post.comments,
+                        location: post.location,
                         likesDetail,
                         commentsDetail,
                         linkTitle: (post as any).linkTitle,
@@ -1479,6 +1613,27 @@ class SnsService {
             const ch = name.charAt(0)
             return escapeHtml(ch || '?')
         }
+        const normalizeLocationText = (value?: string): string => (
+            decodeXmlText(String(value || '')).replace(/\s+/g, ' ').trim()
+        )
+        const resolveLocationText = (location?: SnsLocation): string => {
+            if (!location) return ''
+            const primaryCandidates = [
+                normalizeLocationText(location.poiName),
+                normalizeLocationText(location.poiAddressName),
+                normalizeLocationText(location.label),
+                normalizeLocationText(location.poiAddress)
+            ].filter(Boolean)
+            const primary = primaryCandidates[0] || ''
+            const region = [
+                normalizeLocationText(location.country),
+                normalizeLocationText(location.city)
+            ].filter(Boolean).join(' ')
+            if (primary && region && !primary.includes(region)) {
+                return `${primary} · ${region}`
+            }
+            return primary || region
+        }
 
         let filterInfo = ''
         if (filters.keyword) filterInfo += `关键词: "${escapeHtml(filters.keyword)}" `
@@ -1502,6 +1657,10 @@ class SnsService {
             const linkHtml = post.linkTitle && post.linkUrl
                 ? `<a class="lk" href="${escapeHtml(post.linkUrl)}" target="_blank"><span class="lk-t">${escapeHtml(post.linkTitle)}</span><span class="lk-a">›</span></a>`
                 : ''
+            const locationText = resolveLocationText(post.location)
+            const locationHtml = locationText
+                ? `<div class="loc"><span class="loc-i">📍</span><span class="loc-t">${escapeHtml(locationText)}</span></div>`
+                : ''
 
             const likesHtml = post.likes.length > 0
                 ? `<div class="interactions"><div class="likes">♥ ${post.likes.map(l => `<span>${escapeHtml(l)}</span>`).join('、')}</div></div>`
@@ -1524,6 +1683,7 @@ ${avatarHtml}
 <div class="body">
 <div class="hd"><span class="nick">${escapeHtml(post.nickname)}</span><span class="tm">${formatTime(post.createTime)}</span></div>
 ${post.contentDesc ? `<div class="txt">${escapeHtml(post.contentDesc)}</div>` : ''}
+${locationHtml}
 ${mediaHtml ? `<div class="mg ${gridClass}">${mediaHtml}</div>` : ''}
 ${linkHtml}
 ${likesHtml}
@@ -1559,6 +1719,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 .nick{font-size:15px;font-weight:700;color:var(--accent);margin-bottom:2px}
 .tm{font-size:12px;color:var(--t3)}
 .txt{font-size:15px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin-bottom:12px}
+.loc{display:flex;align-items:flex-start;gap:6px;font-size:13px;color:var(--t2);margin:-4px 0 12px}
+.loc-i{line-height:1.3}
+.loc-t{line-height:1.45;word-break:break-word}
 
 /* 媒体网格 */
 .mg{display:grid;gap:6px;margin-bottom:12px;max-width:320px}

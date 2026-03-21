@@ -68,6 +68,8 @@ export class WcdbCore {
   private wcdbListMediaDbs: any = null
   private wcdbGetMessageById: any = null
   private wcdbGetEmoticonCdnUrl: any = null
+  private wcdbGetEmoticonCaption: any = null
+  private wcdbGetEmoticonCaptionStrict: any = null
   private wcdbGetDbStatus: any = null
   private wcdbGetVoiceData: any = null
   private wcdbGetVoiceDataBatch: any = null
@@ -264,8 +266,9 @@ export class WcdbCore {
   private getDllPath(): string {
     const isMac = process.platform === 'darwin'
     const isLinux = process.platform === 'linux'
+    const isArm64 = process.arch === 'arm64'
     const libName = isMac ? 'libwcdb_api.dylib' : isLinux ? 'libwcdb_api.so' : 'wcdb_api.dll'
-    const subDir = isMac ? 'macos' : isLinux ? 'linux' : ''
+    const subDir = isMac ? 'macos' : isLinux ? 'linux' : (isArm64 ? 'arm64' : '')
     
     const envDllPath = process.env.WCDB_DLL_PATH
     if (envDllPath && envDllPath.length > 0) {
@@ -294,6 +297,26 @@ export class WcdbCore {
     }
 
     return candidates[0] || libName
+  }
+
+  private formatInitProtectionError(code: number): string {
+    switch (code) {
+      case -101: return '安全校验失败：授权已过期（-101）'
+      case -102: return '安全校验失败：关键环境文件缺失（-102）'
+      case -2201: return '安全校验失败：未找到签名清单（-2201）'
+      case -2202: return '安全校验失败：缺少签名文件（-2202）'
+      case -2203: return '安全校验失败：读取签名清单失败（-2203）'
+      case -2204: return '安全校验失败：读取签名文件失败（-2204）'
+      case -2205: return '安全校验失败：签名内容格式无效（-2205）'
+      case -2206: return '安全校验失败：签名清单解析失败（-2206）'
+      case -2207: return '安全校验失败：清单平台与当前平台不匹配（-2207）'
+      case -2208: return '安全校验失败：目标文件哈希读取失败（-2208）'
+      case -2209: return '安全校验失败：目标文件哈希不匹配（-2209）'
+      case -2210: return '安全校验失败：签名无效（-2210）'
+      case -2211: return '安全校验失败：主程序 EXE 哈希不匹配（-2211）'
+      case -2212: return '安全校验失败：wcdb_api 模块哈希不匹配（-2212）'
+      default: return `安全校验失败（错误码: ${code}）`
+    }
   }
 
   private isLogEnabled(): boolean {
@@ -621,7 +644,7 @@ export class WcdbCore {
 
       // InitProtection (Added for security)
       try {
-        this.wcdbInitProtection = this.lib.func('bool InitProtection(const char* resourcePath)')
+        this.wcdbInitProtection = this.lib.func('int32 InitProtection(const char* resourcePath)')
 
         // 尝试多个可能的资源路径
         const resourcePaths = [
@@ -634,26 +657,39 @@ export class WcdbCore {
         ].filter(Boolean)
 
         let protectionOk = false
+        let protectionCode = -1
+        let bestFailCode: number | null = null
+        const scoreFailCode = (code: number): number => {
+          if (code >= -2212 && code <= -2201) return 0 // manifest/signature/hash failures
+          if (code === -102 || code === -101 || code === -1006) return 1
+          return 2
+        }
         for (const resPath of resourcePaths) {
           try {
-            // 
-            protectionOk = this.wcdbInitProtection(resPath)
-            if (protectionOk) {
-              // 
+            protectionCode = Number(this.wcdbInitProtection(resPath))
+            if (protectionCode === 0) {
+              protectionOk = true
               break
             }
+            if (bestFailCode === null || scoreFailCode(protectionCode) < scoreFailCode(bestFailCode)) {
+              bestFailCode = protectionCode
+            }
+            this.writeLog(`[bootstrap] InitProtection rc=${protectionCode} path=${resPath}`, true)
           } catch (e) {
-            // console.warn(`[WCDB] InitProtection 失败 (${resPath}):`, e)
+            this.writeLog(`[bootstrap] InitProtection exception path=${resPath}: ${String(e)}`, true)
           }
         }
 
         if (!protectionOk) {
-          // console.warn('[WCDB] Core security check failed - 继续运行但可能不稳定')
-          // this.writeLog('InitProtection 失败，继续运行')
-          // 不返回 false，允许继续运行
+          const finalCode = bestFailCode ?? protectionCode
+          lastDllInitError = this.formatInitProtectionError(finalCode)
+          this.writeLog(`[bootstrap] InitProtection failed finalCode=${finalCode}`, true)
+          return false
         }
       } catch (e) {
-        // console.warn('InitProtection symbol not found:', e)
+        lastDllInitError = `InitProtection symbol not found: ${String(e)}`
+        this.writeLog(`[bootstrap] InitProtection symbol load failed: ${String(e)}`, true)
+        return false
       }
 
       // 定义类型
@@ -851,6 +887,22 @@ export class WcdbCore {
 
       // wcdb_status wcdb_get_emoticon_cdn_url(wcdb_handle handle, const char* db_path, const char* md5, char** out_url)
       this.wcdbGetEmoticonCdnUrl = this.lib.func('int32 wcdb_get_emoticon_cdn_url(int64 handle, const char* dbPath, const char* md5, _Out_ void** outUrl)')
+
+      // wcdb_status wcdb_get_emoticon_caption(wcdb_handle handle, const char* db_path, const char* md5, char** out_caption)
+      try {
+        this.wcdbGetEmoticonCaption = this.lib.func('int32 wcdb_get_emoticon_caption(int64 handle, const char* dbPath, const char* md5, _Out_ void** outCaption)')
+      } catch (e) {
+        this.wcdbGetEmoticonCaption = null
+        this.writeLog(`[diag:emoji] symbol missing wcdb_get_emoticon_caption: ${String(e)}`, true)
+      }
+
+      // wcdb_status wcdb_get_emoticon_caption_strict(wcdb_handle handle, const char* md5, char** out_caption)
+      try {
+        this.wcdbGetEmoticonCaptionStrict = this.lib.func('int32 wcdb_get_emoticon_caption_strict(int64 handle, const char* md5, _Out_ void** outCaption)')
+      } catch (e) {
+        this.wcdbGetEmoticonCaptionStrict = null
+        this.writeLog(`[diag:emoji] symbol missing wcdb_get_emoticon_caption_strict: ${String(e)}`, true)
+      }
 
       // wcdb_status wcdb_list_message_dbs(wcdb_handle handle, char** out_json)
       this.wcdbListMessageDbs = this.lib.func('int32 wcdb_list_message_dbs(int64 handle, _Out_ void** outJson)')
@@ -2695,6 +2747,48 @@ export class WcdbCore {
       const urlStr = this.decodeJsonPtr(outPtr[0])
       if (urlStr === null) return { success: false, error: '解析表情 URL 失败' }
       return { success: true, url: urlStr || undefined }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async getEmoticonCaption(dbPath: string, md5: string): Promise<{ success: boolean; caption?: string; error?: string }> {
+    if (!this.ensureReady()) {
+      return { success: false, error: 'WCDB 未连接' }
+    }
+    if (!this.wcdbGetEmoticonCaption) {
+      return { success: false, error: '接口未就绪: wcdb_get_emoticon_caption' }
+    }
+    try {
+      const outPtr = [null as any]
+      const result = this.wcdbGetEmoticonCaption(this.handle, dbPath || '', md5, outPtr)
+      if (result !== 0 || !outPtr[0]) {
+        return { success: false, error: `获取表情释义失败: ${result}` }
+      }
+      const captionStr = this.decodeJsonPtr(outPtr[0])
+      if (captionStr === null) return { success: false, error: '解析表情释义失败' }
+      return { success: true, caption: captionStr || undefined }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async getEmoticonCaptionStrict(md5: string): Promise<{ success: boolean; caption?: string; error?: string }> {
+    if (!this.ensureReady()) {
+      return { success: false, error: 'WCDB 未连接' }
+    }
+    if (!this.wcdbGetEmoticonCaptionStrict) {
+      return { success: false, error: '接口未就绪: wcdb_get_emoticon_caption_strict' }
+    }
+    try {
+      const outPtr = [null as any]
+      const result = this.wcdbGetEmoticonCaptionStrict(this.handle, md5, outPtr)
+      if (result !== 0 || !outPtr[0]) {
+        return { success: false, error: `获取表情释义失败(strict): ${result}` }
+      }
+      const captionStr = this.decodeJsonPtr(outPtr[0])
+      if (captionStr === null) return { success: false, error: '解析表情释义失败(strict)' }
+      return { success: true, caption: captionStr || undefined }
     } catch (e) {
       return { success: false, error: String(e) }
     }

@@ -4,6 +4,10 @@ import electron from 'vite-plugin-electron'
 import renderer from 'vite-plugin-electron-renderer'
 import { resolve } from 'path'
 
+const handleElectronOnStart = (options: { reload: () => void }) => {
+  options.reload()
+}
+
 export default defineConfig({
   base: './',
   server: {
@@ -23,6 +27,7 @@ export default defineConfig({
     electron([
       {
         entry: 'electron/main.ts',
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -43,6 +48,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/annualReportWorker.ts',
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -61,6 +67,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/dualReportWorker.ts',
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -79,6 +86,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/imageSearchWorker.ts',
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -93,6 +101,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/wcdbWorker.ts',
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -112,6 +121,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/transcribeWorker.ts',
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -129,6 +139,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/exportWorker.ts',
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron',
@@ -149,9 +160,7 @@ export default defineConfig({
       },
       {
         entry: 'electron/preload.ts',
-        onstart(options) {
-          options.reload()
-        },
+        onstart: handleElectronOnStart,
         vite: {
           build: {
             outDir: 'dist-electron'

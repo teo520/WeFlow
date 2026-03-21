@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Heart, ChevronRight, ImageIcon, Code, Trash2 } from 'lucide-react'
-import { SnsPost, SnsLinkCardData } from '../../types/sns'
+import { Heart, ChevronRight, ImageIcon, Code, Trash2, MapPin } from 'lucide-react'
+import { SnsPost, SnsLinkCardData, SnsLocation } from '../../types/sns'
 import { Avatar } from '../Avatar'
 import { SnsMediaGrid } from './SnsMediaGrid'
 import { getEmojiPath } from 'wechat-emojis'
@@ -134,6 +134,30 @@ const buildLinkCardData = (post: SnsPost): SnsLinkCardData | null => {
     }
 }
 
+const buildLocationText = (location?: SnsLocation): string => {
+    if (!location) return ''
+
+    const normalize = (value?: string): string => (
+        decodeHtmlEntities(String(value || '')).replace(/\s+/g, ' ').trim()
+    )
+
+    const primary = [
+        normalize(location.poiName),
+        normalize(location.poiAddressName),
+        normalize(location.label),
+        normalize(location.poiAddress)
+    ].find(Boolean) || ''
+
+    const region = [normalize(location.country), normalize(location.city)]
+        .filter(Boolean)
+        .join(' ')
+
+    if (primary && region && !primary.includes(region)) {
+        return `${primary} · ${region}`
+    }
+    return primary || region
+}
+
 const SnsLinkCard = ({ card }: { card: SnsLinkCardData }) => {
     const [thumbFailed, setThumbFailed] = useState(false)
     const hostname = useMemo(() => {
@@ -254,6 +278,7 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
     const [deleting, setDeleting] = useState(false)
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
     const linkCard = buildLinkCardData(post)
+    const locationText = useMemo(() => buildLocationText(post.location), [post.location])
     const hasVideoMedia = post.type === 15 || post.media.some((item) => isSnsVideoUrl(item.url))
     const showLinkCard = Boolean(linkCard) && post.media.length <= 1 && !hasVideoMedia
     const showMediaGrid = post.media.length > 0 && !showLinkCard
@@ -377,6 +402,13 @@ export const SnsPostItem: React.FC<SnsPostItemProps> = ({ post, onPreview, onDeb
 
                 {post.contentDesc && (
                     <div className="post-text">{renderTextWithEmoji(decodeHtmlEntities(post.contentDesc))}</div>
+                )}
+
+                {locationText && (
+                    <div className="post-location" title={locationText}>
+                        <MapPin size={14} />
+                        <span className="post-location-text">{locationText}</span>
+                    </div>
                 )}
 
                 {showLinkCard && linkCard && (

@@ -7611,6 +7611,12 @@ function MessageBubble({
   const [voiceWaveform, setVoiceWaveform] = useState<number[]>([])
   const voiceAutoDecryptTriggered = useRef(false)
 
+
+  const [systemAlert, setSystemAlert] = useState<{
+    title: string;
+    message: React.ReactNode;
+  } | null>(null)
+
   // 转账消息双方名称
   const [transferPayerName, setTransferPayerName] = useState<string | undefined>(undefined)
   const [transferReceiverName, setTransferReceiverName] = useState<string | undefined>(undefined)
@@ -8290,9 +8296,9 @@ function MessageBubble({
       }
 
       const result = await window.electronAPI.chat.getVoiceTranscript(
-        session.username,
-        String(message.localId),
-        message.createTime
+          session.username,
+          String(message.localId),
+          message.createTime
       )
 
       if (result.success) {
@@ -8300,6 +8306,21 @@ function MessageBubble({
         voiceTranscriptCache.set(voiceTranscriptCacheKey, transcriptText)
         setVoiceTranscript(transcriptText)
       } else {
+        if (result.error === 'SEGFAULT_ERROR') {
+          console.warn('[ChatPage] 捕获到语音引擎底层段错误');
+
+          setSystemAlert({
+            title: '引擎崩溃提示',
+            message: (
+                <>
+                  语音识别引擎发生底层崩溃 (Segmentation Fault)。<br /><br />
+                  如果您使用的是 Linux 等自定义程度较高的系统，请检查 <code>sherpa-onnx</code> 的相关系统动态链接库 (如 glibc 等) 是否兼容。
+                </>
+            )
+          });
+
+        }
+
         setVoiceTranscriptError(true)
         voiceTranscriptRequestedRef.current = false
       }
@@ -9698,6 +9719,31 @@ function MessageBubble({
           }}>
             {isSelected && <Check size={14} strokeWidth={3} />}
           </div>
+        )}
+        {systemAlert && createPortal(
+            <div className="modal-overlay" onClick={() => setSystemAlert(null)} style={{ zIndex: 99999 }}>
+              <div className="delete-confirm-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+                <div className="confirm-icon">
+                  <AlertCircle size={32} color="var(--danger)" />
+                </div>
+                <div className="confirm-content">
+                  <h3>{systemAlert.title}</h3>
+                  <p style={{ marginTop: '12px', lineHeight: '1.6', fontSize: '14px', color: 'var(--text-secondary)' }}>
+                    {systemAlert.message}
+                  </p>
+                </div>
+                <div className="confirm-actions" style={{ justifyContent: 'center', marginTop: '24px' }}>
+                  <button
+                      className="btn-primary"
+                      onClick={() => setSystemAlert(null)}
+                      style={{ padding: '8px 32px' }}
+                  >
+                    确认
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
         )}
       </div>
     </>

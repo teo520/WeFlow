@@ -273,8 +273,20 @@ export class VoiceTranscribeService {
         })
 
         worker.on('error', (err: Error) => resolve({ success: false, error: String(err) }))
-        worker.on('exit', (code: number) => {
-          if (code !== 0) resolve({ success: false, error: `Worker exited with code ${code}` })
+        worker.on('exit', (code: number | null, signal: string | null) => {
+          if (code === null || signal === 'SIGSEGV') {
+
+            console.error(`[VoiceTranscribe] Worker 异常崩溃，信号: ${signal}。可能是由于底层 C++ 运行库在当前系统上发生段错误。`);
+            resolve({
+              success: false,
+              error: 'SEGFAULT_ERROR'
+            });
+            return;
+          }
+
+          if (code !== 0) {
+            resolve({ success: false, error: `Worker exited with code ${code}` });
+          }
         })
 
       } catch (error) {

@@ -122,6 +122,67 @@ let isDownloadInProgress = false
 let downloadProgressHandler: ((progress: any) => void) | null = null
 let downloadedHandler: (() => void) | null = null
 
+const normalizeReleaseNotes = (rawReleaseNotes: unknown): string => {
+  const merged = (() => {
+    if (typeof rawReleaseNotes === 'string') {
+      return rawReleaseNotes
+    }
+    if (Array.isArray(rawReleaseNotes)) {
+      return rawReleaseNotes
+        .map((item) => {
+          if (!item || typeof item !== 'object') return ''
+          const note = (item as { note?: unknown }).note
+          return typeof note === 'string' ? note : ''
+        })
+        .filter(Boolean)
+        .join('\n\n')
+    }
+    return ''
+  })()
+
+  if (!merged.trim()) return ''
+
+  // 兼容 electron-updater 直接返回 HTML 的场景
+  const removeDownloadSectionFromHtml = (input: string): string => {
+    return input.replace(
+      /<h[1-6][^>]*>\s*(?:下载|download)\s*<\/h[1-6]>\s*[\s\S]*?(?=<h[1-6]\b|$)/gi,
+      ''
+    )
+  }
+
+  // 兼容 Markdown 场景（Action 最终 release note 模板）
+  const removeDownloadSectionFromMarkdown = (input: string): string => {
+    const lines = input.split(/\r?\n/)
+    const output: string[] = []
+    let skipDownloadSection = false
+
+    for (const line of lines) {
+      const headingMatch = line.match(/^\s*#{1,6}\s*(.+?)\s*$/)
+      if (headingMatch) {
+        const heading = headingMatch[1].trim().toLowerCase()
+        if (heading === '下载' || heading === 'download') {
+          skipDownloadSection = true
+          continue
+        }
+        if (skipDownloadSection) {
+          skipDownloadSection = false
+        }
+      }
+      if (!skipDownloadSection) {
+        output.push(line)
+      }
+    }
+
+    return output.join('\n')
+  }
+
+  const cleaned = removeDownloadSectionFromMarkdown(removeDownloadSectionFromHtml(merged))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+
+  return cleaned
+}
+
 type AnnualReportYearsLoadStrategy = 'cache' | 'native' | 'hybrid'
 type AnnualReportYearsLoadPhase = 'cache' | 'native' | 'scan' | 'done'
 
@@ -1043,6 +1104,13 @@ function registerIpcHandlers() {
     return app.getVersion()
   })
 
+  ipcMain.handle('app:checkWayland', async () => {
+    if (process.platform !== 'linux') return false;
+
+    const sessionType = process.env.XDG_SESSION_TYPE?.toLowerCase();
+    return Boolean(process.env.WAYLAND_DISPLAY || sessionType === 'wayland');
+  })
+
   ipcMain.handle('log:getPath', async () => {
     return join(app.getPath('userData'), 'logs', 'wcdb.log')
   })
@@ -1114,7 +1182,7 @@ function registerIpcHandlers() {
           return {
             hasUpdate: true,
             version: latestVersion,
-            releaseNotes: result.updateInfo.releaseNotes as string || ''
+            releaseNotes: normalizeReleaseNotes(result.updateInfo.releaseNotes)
           }
         }
       }
@@ -2567,7 +2635,7 @@ function checkForUpdatesOnStartup() {
           // 通知渲染进程有新版本
           mainWindow.webContents.send('app:updateAvailable', {
             version: latestVersion,
-            releaseNotes: result.updateInfo.releaseNotes || ''
+            releaseNotes: normalizeReleaseNotes(result.updateInfo.releaseNotes)
           })
         }
       }

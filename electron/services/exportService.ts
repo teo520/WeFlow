@@ -267,6 +267,13 @@ class ExportService {
   private readonly mediaFileCacheMaxBytes = 6 * 1024 * 1024 * 1024
   private readonly mediaFileCacheMaxFiles = 120000
   private readonly mediaFileCacheTtlMs = 45 * 24 * 60 * 60 * 1000
+  private emojiCaptionCache = new Map<string, string | null>()
+  private emojiCaptionPending = new Map<string, Promise<string | null>>()
+  private emojiMd5ByCdnCache = new Map<string, string | null>()
+  private emojiMd5ByCdnPending = new Map<string, Promise<string | null>>()
+  private emoticonDbPathCache: string | null = null
+  private emoticonDbPathCacheToken = ''
+  private readonly emojiCaptionLookupConcurrency = 8
 
   constructor() {
     this.configService = new ConfigService()
@@ -919,7 +926,7 @@ class ExportService {
 
   private shouldDecodeMessageContentInFastMode(localType: number): boolean {
     // 这些类型在文本导出里只需要占位符，无需解码完整 XML / 压缩内容
-    if (localType === 3 || localType === 34 || localType === 42 || localType === 43 || localType === 47) {
+    if (localType === 3 || localType === 34 || localType === 42 || localType === 43) {
       return false
     }
     return true
@@ -993,18 +1000,290 @@ class ExportService {
     return `${localType}_${this.getStableMessageKey(msg)}`
   }
 
-  private getImageMissingRunCacheKey(
+  private normalizeEmojiMd5(value: unknown): string | undefined {
+    const md5 = String(value || '').trim().toLowerCase()
+    if (!/^[a-f0-9]{32}$/.test(md5)) return undefined
+    return md5
+  }
+
+  private normalizeEmojiCaption(value: unknown): string | null {
+    const caption = String(value || '').trim()
+    if (!caption) return null
+    return caption
+  }
+
+  private formatEmojiSemanticText(caption?: string | null): string {
+    const normalizedCaption = this.normalizeEmojiCaption(caption)
+    if (!normalizedCaption) return '[表情包]'
+    return `[表情包：${normalizedCaption}]`
+  }
+
+  private extractLooseHexMd5(content: string): string | undefined {
+    if (!content) return undefined
+    const keyedMatch =
+      /(?:emoji|sticker|md5)[^a-fA-F0-9]{0,32}([a-fA-F0-9]{32})/i.exec(content) ||
+      /([a-fA-F0-9]{32})/i.exec(content)
+    return this.normalizeEmojiMd5(keyedMatch?.[1] || keyedMatch?.[0])
+  }
+
+  private normalizeEmojiCdnUrl(value: unknown): string | undefined {
+    let url = String(value || '').trim()
+    if (!url) return undefined
+    url = url.replace(/&amp;/g, '&')
+    try {
+      if (url.includes('%')) {
+        url = decodeURIComponent(url)
+      }
+    } catch {
+      // keep original URL if decoding fails
+    }
+    return url.trim() || undefined
+  }
+
+  private resolveStrictEmoticonDbPath(): string | null {
+    const dbPath = String(this.configService.get('dbPath') || '').trim()
+    const rawWxid = String(this.configService.get('myWxid') || '').trim()
+    const cleanedWxid = this.cleanAccountDirName(rawWxid)
+    const token = `${dbPath}::${rawWxid}::${cleanedWxid}`
+    if (token === this.emoticonDbPathCacheToken) {
+      return this.emoticonDbPathCache
+    }
+    this.emoticonDbPathCacheToken = token
+    this.emoticonDbPathCache = null
+
+    const dbStoragePath =
+      this.resolveDbStoragePathForExport(dbPath, cleanedWxid) ||
+      this.resolveDbStoragePathForExport(dbPath, rawWxid)
+    if (!dbStoragePath) return null
+
+    const strictPath = path.join(dbStoragePath, 'emoticon', 'emoticon.db')
+    if (fs.existsSync(strictPath)) {
+      this.emoticonDbPathCache = strictPath
+      return strictPath
+    }
+    return null
+  }
+
+  private resolveDbStoragePathForExport(basePath: string, wxid: string): string | null {
+    if (!basePath) return null
+    const normalized = basePath.replace(/[\\/]+$/, '')
+    if (normalized.toLowerCase().endsWith('db_storage') && fs.existsSync(normalized)) {
+      return normalized
+    }
+    const direct = path.join(normalized, 'db_storage')
+    if (fs.existsSync(direct)) {
+      return direct
+    }
+    if (!wxid) return null
+
+    const viaWxid = path.join(normalized, wxid, 'db_storage')
+    if (fs.existsSync(viaWxid)) {
+      return viaWxid
+    }
+
+    try {
+      const entries = fs.readdirSync(normalized)
+      const lowerWxid = wxid.toLowerCase()
+      const candidates = entries.filter((entry) => {
+        const entryPath = path.join(normalized, entry)
+        try {
+          if (!fs.statSync(entryPath).isDirectory()) return false
+        } catch {
+          return false
+        }
+        const lowerEntry = entry.toLowerCase()
+        return lowerEntry === lowerWxid || lowerEntry.startsWith(`${lowerWxid}_`)
+      })
+      for (const entry of candidates) {
+        const candidate = path.join(normalized, entry, 'db_storage')
+        if (fs.existsSync(candidate)) {
+          return candidate
+        }
+      }
+    } catch {
+      // keep null
+    }
+
+    return null
+  }
+
+  private async queryEmojiMd5ByCdnUrlFallback(cdnUrlRaw: string): Promise<string | null> {
+    const cdnUrl = this.normalizeEmojiCdnUrl(cdnUrlRaw)
+    if (!cdnUrl) return null
+    const emoticonDbPath = this.resolveStrictEmoticonDbPath()
+    if (!emoticonDbPath) return null
+
+    const candidates = Array.from(new Set([
+      cdnUrl,
+      cdnUrl.replace(/&/g, '&amp;')
+    ]))
+
+    for (const candidate of candidates) {
+      const escaped = candidate.replace(/'/g, "''")
+      const result = await wcdbService.execQuery(
+        'message',
+        emoticonDbPath,
+        `SELECT md5, lower(hex(md5)) AS md5_hex FROM kNonStoreEmoticonTable WHERE cdn_url = '${escaped}' COLLATE NOCASE LIMIT 1`
+      )
+      const row = result.success && Array.isArray(result.rows) ? result.rows[0] : null
+      const md5 = this.normalizeEmojiMd5(this.getRowField(row || {}, ['md5', 'md5_hex']))
+      if (md5) return md5
+    }
+
+    return null
+  }
+
+  private async getEmojiMd5ByCdnUrl(cdnUrlRaw: string): Promise<string | null> {
+    const cdnUrl = this.normalizeEmojiCdnUrl(cdnUrlRaw)
+    if (!cdnUrl) return null
+
+    if (this.emojiMd5ByCdnCache.has(cdnUrl)) {
+      return this.emojiMd5ByCdnCache.get(cdnUrl) ?? null
+    }
+
+    const pending = this.emojiMd5ByCdnPending.get(cdnUrl)
+    if (pending) return pending
+
+    const task = (async (): Promise<string | null> => {
+      try {
+        return await this.queryEmojiMd5ByCdnUrlFallback(cdnUrl)
+      } catch {
+        return null
+      }
+    })()
+
+    this.emojiMd5ByCdnPending.set(cdnUrl, task)
+    try {
+      const md5 = await task
+      this.emojiMd5ByCdnCache.set(cdnUrl, md5)
+      return md5
+    } finally {
+      this.emojiMd5ByCdnPending.delete(cdnUrl)
+    }
+  }
+
+  private async getEmojiCaptionByMd5(md5Raw: string): Promise<string | null> {
+    const md5 = this.normalizeEmojiMd5(md5Raw)
+    if (!md5) return null
+
+    if (this.emojiCaptionCache.has(md5)) {
+      return this.emojiCaptionCache.get(md5) ?? null
+    }
+
+    const pending = this.emojiCaptionPending.get(md5)
+    if (pending) return pending
+
+    const task = (async (): Promise<string | null> => {
+      try {
+        const nativeResult = await wcdbService.getEmoticonCaptionStrict(md5)
+        if (nativeResult.success) {
+          const nativeCaption = this.normalizeEmojiCaption(nativeResult.caption)
+          if (nativeCaption) return nativeCaption
+        }
+      } catch {
+        // ignore and return null
+      }
+      return null
+    })()
+
+    this.emojiCaptionPending.set(md5, task)
+    try {
+      const caption = await task
+      if (caption) {
+        this.emojiCaptionCache.set(md5, caption)
+      } else {
+        this.emojiCaptionCache.delete(md5)
+      }
+      return caption
+    } finally {
+      this.emojiCaptionPending.delete(md5)
+    }
+  }
+
+  private async hydrateEmojiCaptionsForMessages(
     sessionId: string,
-    imageMd5: unknown,
-    imageDatName: unknown,
-    imageDeepSearchOnMiss: boolean
-  ): string | null {
-    const normalizedSessionId = String(sessionId || '').trim()
-    const normalizedMd5 = String(imageMd5 || '').trim().toLowerCase()
-    const normalizedDatName = String(imageDatName || '').trim().toLowerCase()
-    if (!normalizedMd5 && !normalizedDatName) return null
-    const mode = imageDeepSearchOnMiss ? 'deep' : 'hardlink'
-    return `${normalizedSessionId}\u001f${normalizedMd5}\u001f${normalizedDatName}\u001f${mode}`
+    messages: any[],
+    control?: ExportTaskControl
+  ): Promise<void> {
+    if (!Array.isArray(messages) || messages.length === 0) return
+
+    // 某些环境下游标行缺失 47 的 md5，先按 localId 回填详情再做 caption 查询。
+    await this.backfillMediaFieldsFromMessageDetail(sessionId, messages, new Set([47]), control)
+
+    const unresolvedByUrl = new Map<string, any[]>()
+
+    const uniqueMd5s = new Set<string>()
+    let scanIndex = 0
+    for (const msg of messages) {
+      if ((scanIndex++ & 0x7f) === 0) {
+        this.throwIfStopRequested(control)
+      }
+      if (Number(msg?.localType) !== 47) continue
+
+      const content = String(msg?.content || '')
+      const normalizedMd5 = this.normalizeEmojiMd5(msg?.emojiMd5)
+        || this.extractEmojiMd5(content)
+        || this.extractLooseHexMd5(content)
+      const normalizedCdnUrl = this.normalizeEmojiCdnUrl(msg?.emojiCdnUrl || this.extractEmojiUrl(content))
+      if (normalizedCdnUrl) {
+        msg.emojiCdnUrl = normalizedCdnUrl
+      }
+      if (!normalizedMd5) {
+        if (normalizedCdnUrl) {
+          const bucket = unresolvedByUrl.get(normalizedCdnUrl) || []
+          bucket.push(msg)
+          unresolvedByUrl.set(normalizedCdnUrl, bucket)
+        } else {
+          msg.emojiMd5 = undefined
+          msg.emojiCaption = undefined
+        }
+        continue
+      }
+
+      msg.emojiMd5 = normalizedMd5
+      uniqueMd5s.add(normalizedMd5)
+    }
+
+    const unresolvedUrls = Array.from(unresolvedByUrl.keys())
+    if (unresolvedUrls.length > 0) {
+      await parallelLimit(unresolvedUrls, this.emojiCaptionLookupConcurrency, async (url, index) => {
+        if ((index & 0x0f) === 0) {
+          this.throwIfStopRequested(control)
+        }
+        const resolvedMd5 = await this.getEmojiMd5ByCdnUrl(url)
+        if (!resolvedMd5) return
+        const attached = unresolvedByUrl.get(url) || []
+        for (const msg of attached) {
+          msg.emojiMd5 = resolvedMd5
+          uniqueMd5s.add(resolvedMd5)
+        }
+      })
+    }
+
+    const md5List = Array.from(uniqueMd5s)
+    if (md5List.length > 0) {
+      await parallelLimit(md5List, this.emojiCaptionLookupConcurrency, async (md5, index) => {
+        if ((index & 0x0f) === 0) {
+          this.throwIfStopRequested(control)
+        }
+        await this.getEmojiCaptionByMd5(md5)
+      })
+    }
+
+    let assignIndex = 0
+    for (const msg of messages) {
+      if ((assignIndex++ & 0x7f) === 0) {
+        this.throwIfStopRequested(control)
+      }
+      if (Number(msg?.localType) !== 47) continue
+      const md5 = this.normalizeEmojiMd5(msg?.emojiMd5)
+      if (!md5) {
+        msg.emojiCaption = undefined
+        continue
+      }
+      const caption = this.emojiCaptionCache.get(md5) ?? null
+      msg.emojiCaption = caption || undefined
+    }
   }
 
   private async ensureConnected(): Promise<{ success: boolean; cleanedWxid?: string; error?: string }> {
@@ -1592,8 +1871,12 @@ class ExportService {
     createTime?: number,
     myWxid?: string,
     senderWxid?: string,
-    isSend?: boolean
+    isSend?: boolean,
+    emojiCaption?: string
   ): string | null {
+    if (!content && localType === 47) {
+      return this.formatEmojiSemanticText(emojiCaption)
+    }
     if (!content) return null
 
     const normalizedContent = this.normalizeAppMessageContent(content)
@@ -1619,7 +1902,7 @@ class ExportService {
       }
       case 42: return '[名片]'
       case 43: return '[视频]'
-      case 47: return '[动画表情]'
+      case 47: return this.formatEmojiSemanticText(emojiCaption)
       case 48: {
         const normalized48 = this.normalizeAppMessageContent(content)
         const locPoiname = this.extractXmlAttribute(normalized48, 'location', 'poiname') || this.extractXmlValue(normalized48, 'poiname') || this.extractXmlValue(normalized48, 'poiName')
@@ -1729,7 +2012,8 @@ class ExportService {
     voiceTranscript?: string,
     myWxid?: string,
     senderWxid?: string,
-    isSend?: boolean
+    isSend?: boolean,
+    emojiCaption?: string
   ): string {
     const safeContent = content || ''
 
@@ -1758,6 +2042,9 @@ class ExportService {
         this.extractXmlValue(normalized, 'duration')
       const seconds = lengthValue ? this.parseDurationSeconds(lengthValue) : null
       return seconds ? `[视频]${seconds}s` : '[视频]'
+    }
+    if (localType === 47) {
+      return this.formatEmojiSemanticText(emojiCaption)
     }
     if (localType === 48) {
       const normalized = this.normalizeAppMessageContent(safeContent)
@@ -2499,7 +2786,7 @@ class ExportService {
       case 3: return '[图片]'
       case 34: return '[语音消息]'
       case 43: return '[视频]'
-      case 47: return '[动画表情]'
+      case 47: return '[表情包]'
       case 49:
       case 8: return title ? `[文件] ${title}` : '[文件]'
       case 17: return item.chatRecordDesc || title || '[聊天记录]'
@@ -2640,7 +2927,7 @@ class ExportService {
           displayContent = '[视频]'
           break
         case '47':
-          displayContent = '[动画表情]'
+          displayContent = '[表情包]'
           break
         case '49':
           displayContent = '[链接]'
@@ -2953,7 +3240,17 @@ class ExportService {
     return rendered.join('')
   }
 
-  private formatHtmlMessageText(content: string, localType: number, myWxid?: string, senderWxid?: string, isSend?: boolean): string {
+  private formatHtmlMessageText(
+    content: string,
+    localType: number,
+    myWxid?: string,
+    senderWxid?: string,
+    isSend?: boolean,
+    emojiCaption?: string
+  ): string {
+    if (!content && localType === 47) {
+      return this.formatEmojiSemanticText(emojiCaption)
+    }
     if (!content) return ''
 
     if (localType === 1) {
@@ -2961,10 +3258,10 @@ class ExportService {
     }
 
     if (localType === 34) {
-      return this.parseMessageContent(content, localType, undefined, undefined, myWxid, senderWxid, isSend) || ''
+      return this.parseMessageContent(content, localType, undefined, undefined, myWxid, senderWxid, isSend, emojiCaption) || ''
     }
 
-    return this.formatPlainExportContent(content, localType, { exportVoiceAsText: false }, undefined, myWxid, senderWxid, isSend)
+    return this.formatPlainExportContent(content, localType, { exportVoiceAsText: false }, undefined, myWxid, senderWxid, isSend, emojiCaption)
   }
 
   private extractHtmlLinkCard(content: string, localType: number): { title: string; url: string } | null {
@@ -3535,8 +3832,11 @@ class ExportService {
    */
   private extractEmojiMd5(content: string): string | undefined {
     if (!content) return undefined
-    const match = /md5="([^"]+)"/i.exec(content) || /<md5>([^<]+)<\/md5>/i.exec(content)
-    return match?.[1]
+    const match =
+      /md5\s*=\s*['"]([a-fA-F0-9]{32})['"]/i.exec(content) ||
+      /md5\s*=\s*([a-fA-F0-9]{32})/i.exec(content) ||
+      /<md5>([a-fA-F0-9]{32})<\/md5>/i.exec(content)
+    return this.normalizeEmojiMd5(match?.[1]) || this.extractLooseHexMd5(content)
   }
 
   private extractVideoMd5(content: string): string | undefined {
@@ -3825,6 +4125,7 @@ class ExportService {
           let locationPoiname: string | undefined
           let locationLabel: string | undefined
           let chatRecordList: any[] | undefined
+          let emojiCaption: string | undefined
 
           if (localType === 48 && content) {
             const locationMeta = this.extractLocationMeta(content, localType)
@@ -3836,22 +4137,30 @@ class ExportService {
             }
           }
 
+          if (localType === 47) {
+            emojiCdnUrl = String(row.emoji_cdn_url || row.emojiCdnUrl || '').trim() || undefined
+            emojiMd5 = this.normalizeEmojiMd5(row.emoji_md5 || row.emojiMd5) || undefined
+            const packedInfoRaw = String(row.packed_info || row.packedInfo || row.PackedInfo || '')
+            const reserved0Raw = String(row.reserved0 || row.Reserved0 || '')
+            const supplementalPayload = `${this.decodeMaybeCompressed(packedInfoRaw)}\n${this.decodeMaybeCompressed(reserved0Raw)}`
+            if (content) {
+              emojiCdnUrl = emojiCdnUrl || this.extractEmojiUrl(content)
+              emojiMd5 = emojiMd5 || this.normalizeEmojiMd5(this.extractEmojiMd5(content))
+            }
+            emojiCdnUrl = emojiCdnUrl || this.extractEmojiUrl(supplementalPayload)
+            emojiMd5 = emojiMd5 || this.extractEmojiMd5(supplementalPayload) || this.extractLooseHexMd5(supplementalPayload)
+          }
+
           if (collectMode === 'full' || collectMode === 'media-fast') {
             // 优先复用游标返回的字段，缺失时再回退到 XML 解析。
             imageMd5 = String(row.image_md5 || row.imageMd5 || '').trim() || undefined
             imageDatName = String(row.image_dat_name || row.imageDatName || '').trim() || undefined
-            emojiCdnUrl = String(row.emoji_cdn_url || row.emojiCdnUrl || '').trim() || undefined
-            emojiMd5 = String(row.emoji_md5 || row.emojiMd5 || '').trim() || undefined
             videoMd5 = String(row.video_md5 || row.videoMd5 || '').trim() || undefined
 
             if (localType === 3 && content) {
               // 图片消息
               imageMd5 = imageMd5 || this.extractImageMd5(content)
               imageDatName = imageDatName || this.extractImageDatName(content)
-            } else if (localType === 47 && content) {
-              // 动画表情
-              emojiCdnUrl = emojiCdnUrl || this.extractEmojiUrl(content)
-              emojiMd5 = emojiMd5 || this.extractEmojiMd5(content)
             } else if (localType === 43 && content) {
               // 视频消息
               videoMd5 = videoMd5 || this.extractVideoMd5(content)
@@ -3878,6 +4187,7 @@ class ExportService {
             imageDatName,
             emojiCdnUrl,
             emojiMd5,
+            emojiCaption,
             videoMd5,
             locationLat,
             locationLng,
@@ -3946,7 +4256,7 @@ class ExportService {
     const needsBackfill = rows.filter((msg) => {
       if (!targetMediaTypes.has(msg.localType)) return false
       if (msg.localType === 3) return !msg.imageMd5 && !msg.imageDatName
-      if (msg.localType === 47) return !msg.emojiMd5 && !msg.emojiCdnUrl
+      if (msg.localType === 47) return !msg.emojiMd5
       if (msg.localType === 43) return !msg.videoMd5
       return false
     })
@@ -3963,9 +4273,16 @@ class ExportService {
         if (!detail.success || !detail.message) return
 
         const row = detail.message as any
-        const rawMessageContent = row.message_content ?? row.messageContent ?? row.msg_content ?? row.msgContent ?? ''
-        const rawCompressContent = row.compress_content ?? row.compressContent ?? row.msg_compress_content ?? row.msgCompressContent ?? ''
+        const rawMessageContent = this.getRowField(row, [
+          'message_content', 'messageContent', 'msg_content', 'msgContent', 'strContent', 'content', 'WCDB_CT_message_content'
+        ]) ?? ''
+        const rawCompressContent = this.getRowField(row, [
+          'compress_content', 'compressContent', 'msg_compress_content', 'msgCompressContent', 'WCDB_CT_compress_content'
+        ]) ?? ''
         const content = this.decodeMessageContent(rawMessageContent, rawCompressContent)
+        const packedInfoRaw = this.getRowField(row, ['packed_info', 'packedInfo', 'PackedInfo', 'WCDB_CT_packed_info']) ?? ''
+        const reserved0Raw = this.getRowField(row, ['reserved0', 'Reserved0', 'WCDB_CT_Reserved0']) ?? ''
+        const supplementalPayload = `${this.decodeMaybeCompressed(String(packedInfoRaw || ''))}\n${this.decodeMaybeCompressed(String(reserved0Raw || ''))}`
 
         if (msg.localType === 3) {
           const imageMd5 = String(row.image_md5 || row.imageMd5 || '').trim() || this.extractImageMd5(content)
@@ -3976,8 +4293,15 @@ class ExportService {
         }
 
         if (msg.localType === 47) {
-          const emojiMd5 = String(row.emoji_md5 || row.emojiMd5 || '').trim() || this.extractEmojiMd5(content)
-          const emojiCdnUrl = String(row.emoji_cdn_url || row.emojiCdnUrl || '').trim() || this.extractEmojiUrl(content)
+          const emojiMd5 =
+            this.normalizeEmojiMd5(row.emoji_md5 || row.emojiMd5) ||
+            this.extractEmojiMd5(content) ||
+            this.extractEmojiMd5(supplementalPayload) ||
+            this.extractLooseHexMd5(supplementalPayload)
+          const emojiCdnUrl =
+            String(row.emoji_cdn_url || row.emojiCdnUrl || '').trim() ||
+            this.extractEmojiUrl(content) ||
+            this.extractEmojiUrl(supplementalPayload)
           if (emojiMd5) msg.emojiMd5 = emojiMd5
           if (emojiCdnUrl) msg.emojiCdnUrl = emojiCdnUrl
           return
@@ -4457,6 +4781,8 @@ class ExportService {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
 
+      await this.hydrateEmojiCaptionsForMessages(sessionId, allMessages, control)
+
       const voiceMessages = options.exportVoiceAsText
         ? allMessages.filter(msg => msg.localType === 34)
         : []
@@ -4683,7 +5009,8 @@ class ExportService {
             msg.createTime,
             cleanedMyWxid,
             msg.senderUsername,
-            msg.isSend
+            msg.isSend,
+            msg.emojiCaption
           )
         }
 
@@ -4775,7 +5102,7 @@ class ExportService {
                 break
               case 47:
                 recordType = 5 // EMOJI
-                recordContent = '[动画表情]'
+                recordContent = '[表情包]'
                 break
               default:
                 recordType = 0
@@ -4985,6 +5312,8 @@ class ExportService {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
 
+      await this.hydrateEmojiCaptionsForMessages(sessionId, collected.rows, control)
+
       const voiceMessages = options.exportVoiceAsText
         ? collected.rows.filter(msg => msg.localType === 34)
         : []
@@ -5164,7 +5493,7 @@ class ExportService {
 
         if (msg.localType === 34 && options.exportVoiceAsText) {
           content = voiceTranscriptMap.get(this.getStableMessageKey(msg)) || '[语音消息 - 转文字失败]'
-        } else if (mediaItem) {
+        } else if (mediaItem && msg.localType !== 47) {
           content = mediaItem.relativePath
         } else {
           content = this.parseMessageContent(
@@ -5174,7 +5503,8 @@ class ExportService {
             undefined,
             cleanedMyWxid,
             msg.senderUsername,
-            msg.isSend
+            msg.isSend,
+            msg.emojiCaption
           )
         }
 
@@ -5233,6 +5563,12 @@ class ExportService {
           senderDisplayName,
           source,
           senderAvatarKey: msg.senderUsername
+        }
+
+        if (msg.localType === 47) {
+          if (msg.emojiMd5) msgObj.emojiMd5 = msg.emojiMd5
+          if (msg.emojiCdnUrl) msgObj.emojiCdnUrl = msg.emojiCdnUrl
+          if (msg.emojiCaption) msgObj.emojiCaption = msg.emojiCaption
         }
 
         const platformMessageId = this.getExportPlatformMessageId(msg)
@@ -5470,6 +5806,9 @@ class ExportService {
           if (message.linkTitle) compactMessage.linkTitle = message.linkTitle
           if (message.linkUrl) compactMessage.linkUrl = message.linkUrl
           if (message.linkThumb) compactMessage.linkThumb = message.linkThumb
+          if (message.emojiMd5) compactMessage.emojiMd5 = message.emojiMd5
+          if (message.emojiCdnUrl) compactMessage.emojiCdnUrl = message.emojiCdnUrl
+          if (message.emojiCaption) compactMessage.emojiCaption = message.emojiCaption
           if (message.finderTitle) compactMessage.finderTitle = message.finderTitle
           if (message.finderDesc) compactMessage.finderDesc = message.finderDesc
           if (message.finderUsername) compactMessage.finderUsername = message.finderUsername
@@ -5699,6 +6038,8 @@ class ExportService {
       if (totalMessages === 0) {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
+
+      await this.hydrateEmojiCaptionsForMessages(sessionId, collected.rows, control)
 
       const voiceMessages = options.exportVoiceAsText
         ? collected.rows.filter(msg => msg.localType === 34)
@@ -6058,9 +6399,10 @@ class ExportService {
             voiceTranscriptMap.get(this.getStableMessageKey(msg)),
             cleanedMyWxid,
             msg.senderUsername,
-            msg.isSend
+            msg.isSend,
+            msg.emojiCaption
           )
-          : (mediaItem?.relativePath
+          : ((msg.localType !== 47 ? mediaItem?.relativePath : undefined)
             || this.formatPlainExportContent(
               msg.content,
               msg.localType,
@@ -6068,7 +6410,8 @@ class ExportService {
               voiceTranscriptMap.get(this.getStableMessageKey(msg)),
               cleanedMyWxid,
               msg.senderUsername,
-              msg.isSend
+              msg.isSend,
+              msg.emojiCaption
             ))
 
         // 转账消息：追加 "谁转账给谁" 信息
@@ -6320,9 +6663,10 @@ class ExportService {
             voiceTranscriptMap.get(this.getStableMessageKey(msg)),
             cleanedMyWxid,
             msg.senderUsername,
-            msg.isSend
+            msg.isSend,
+            msg.emojiCaption
           )
-          : (mediaItem?.relativePath
+          : ((msg.localType !== 47 ? mediaItem?.relativePath : undefined)
             || this.formatPlainExportContent(
               msg.content,
               msg.localType,
@@ -6330,7 +6674,8 @@ class ExportService {
               voiceTranscriptMap.get(this.getStableMessageKey(msg)),
               cleanedMyWxid,
               msg.senderUsername,
-              msg.isSend
+              msg.isSend,
+              msg.emojiCaption
             ))
 
         let enrichedContentValue = contentValue
@@ -6519,6 +6864,8 @@ class ExportService {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
 
+      await this.hydrateEmojiCaptionsForMessages(sessionId, collected.rows, control)
+
       const voiceMessages = options.exportVoiceAsText
         ? collected.rows.filter(msg => msg.localType === 34)
         : []
@@ -6687,9 +7034,10 @@ class ExportService {
             voiceTranscriptMap.get(this.getStableMessageKey(msg)),
             cleanedMyWxid,
             msg.senderUsername,
-            msg.isSend
+            msg.isSend,
+            msg.emojiCaption
           )
-          : (mediaItem?.relativePath
+          : ((msg.localType !== 47 ? mediaItem?.relativePath : undefined)
             || this.formatPlainExportContent(
               msg.content,
               msg.localType,
@@ -6697,7 +7045,8 @@ class ExportService {
               voiceTranscriptMap.get(this.getStableMessageKey(msg)),
               cleanedMyWxid,
               msg.senderUsername,
-              msg.isSend
+              msg.isSend,
+              msg.emojiCaption
             ))
 
         // 转账消息：追加 "谁转账给谁" 信息
@@ -6879,6 +7228,8 @@ class ExportService {
       if (totalMessages === 0) {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
+
+      await this.hydrateEmojiCaptionsForMessages(sessionId, collected.rows, control)
 
       const senderUsernames = new Set<string>()
       let senderScanIndex = 0
@@ -7099,7 +7450,8 @@ class ExportService {
             msg.createTime,
             cleanedMyWxid,
             msg.senderUsername,
-            msg.isSend
+            msg.isSend,
+            msg.emojiCaption
           ) || '')
         const src = this.getWeCloneSource(msg, typeName, mediaItem)
         const platformMessageId = this.getExportPlatformMessageId(msg) || ''
@@ -7307,6 +7659,8 @@ class ExportService {
         return { success: false, error: '该会话在指定时间范围内没有消息' }
       }
       const totalMessages = collected.rows.length
+
+      await this.hydrateEmojiCaptionsForMessages(sessionId, collected.rows, control)
 
       const senderUsernames = new Set<string>()
       let senderScanIndex = 0
@@ -7599,12 +7953,13 @@ class ExportService {
           msg.localType,
           cleanedMyWxid,
           msg.senderUsername,
-          msg.isSend
+          msg.isSend,
+          msg.emojiCaption
         )
         if (msg.localType === 34 && useVoiceTranscript) {
           textContent = voiceTranscriptMap.get(this.getStableMessageKey(msg)) || '[语音消息 - 转文字失败]'
         }
-        if (mediaItem && (msg.localType === 3 || msg.localType === 47)) {
+        if (mediaItem && msg.localType === 3) {
           textContent = ''
         }
         if (this.isTransferExportContent(textContent) && msg.content) {

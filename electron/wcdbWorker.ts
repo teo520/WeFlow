@@ -170,6 +170,12 @@ if (parentPort) {
                 case 'getEmoticonCdnUrl':
                     result = await core.getEmoticonCdnUrl(payload.dbPath, payload.md5)
                     break
+                case 'getEmoticonCaption':
+                    result = await core.getEmoticonCaption(payload.dbPath, payload.md5)
+                    break
+                case 'getEmoticonCaptionStrict':
+                    result = await core.getEmoticonCaptionStrict(payload.md5)
+                    break
                 case 'listMessageDbs':
                     result = await core.listMessageDbs()
                     break

@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs'
-import { execFile, exec } from 'child_process'
+import { execFile, exec, spawn } from 'child_process'
 import { promisify } from 'util'
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
@@ -45,33 +45,104 @@ export class KeyServiceLinux {
       onStatus?: (message: string, level: number) => void
   ): Promise<DbKeyResult> {
     try {
+      // 1. 构造一个包含常用系统命令路径的环境变量，防止打包后找不到命令
+      const envWithPath = {
+        ...process.env,
+        PATH: `${process.env.PATH || ''}:/bin:/usr/bin:/sbin:/usr/sbin:/usr/local/bin`
+      };
+
       onStatus?.('正在尝试结束当前微信进程...', 0)
-      await execAsync('killall -9 wechat wechat-bin xwechat').catch(() => {})
+      console.log('[Debug] 开始执行进程清理逻辑...');
+
+      try {
+        const { stdout, stderr } = await execAsync('killall -9 wechat wechat-bin xwechat', { env: envWithPath });
+        console.log(`[Debug] killall 成功退出. stdout: ${stdout}, stderr: ${stderr}`);
+      } catch (err: any) {
+        // 命令如果没找到进程通常会返回 code 1，这也是正常的，但我们需要记录下来
+        console.log(`[Debug] killall 报错或未找到进程: ${err.message}`);
+
+        // Fallback: 尝试使用 pkill 兜底
+        try {
+          console.log('[Debug] 尝试使用备用命令 pkill...');
+          await execAsync('pkill -9 -x "wechat|wechat-bin|xwechat"', { env: envWithPath });
+          console.log('[Debug] pkill 执行完成');
+        } catch (e: any) {
+          console.log(`[Debug] pkill 报错或未找到进程: ${e.message}`);
+        }
+      }
+
       // 稍微等待进程完全退出
       await new Promise(r => setTimeout(r, 1000))
 
       onStatus?.('正在尝试拉起微信...', 0)
-      const startCmds = [
-        'nohup wechat >/dev/null 2>&1 &',
-        'nohup wechat-bin >/dev/null 2>&1 &',
-        'nohup xwechat >/dev/null 2>&1 &'
+
+      const cleanEnv = { ...process.env };
+      delete cleanEnv.ELECTRON_RUN_AS_NODE;
+      delete cleanEnv.ELECTRON_NO_ATTACH_CONSOLE;
+      delete cleanEnv.APPDIR;
+      delete cleanEnv.APPIMAGE;
+
+      const wechatBins = [
+        'wechat',
+        'wechat-bin',
+        'xwechat',
+        '/opt/wechat/wechat',
+        '/usr/bin/wechat',
+        '/opt/apps/com.tencent.wechat/files/wechat'
       ]
-      for (const cmd of startCmds) execAsync(cmd).catch(() => {})
+
+      for (const binName of wechatBins) {
+        try {
+          const child = spawn(binName, [], {
+            detached: true,
+            stdio: 'ignore',
+            env: cleanEnv
+          });
+
+          child.on('error', (err) => {
+            console.log(`[Debug] 拉起 ${binName} 失败:`, err.message);
+          });
+
+          child.unref();
+          console.log(`[Debug] 尝试拉起 ${binName} 完毕`);
+        } catch (e: any) {
+          console.log(`[Debug] 尝试拉起 ${binName} 发生异常:`, e.message);
+        }
+      }
 
       onStatus?.('等待微信进程出现...', 0)
       let pid = 0
       for (let i = 0; i < 15; i++) { // 最多等 15 秒
         await new Promise(r => setTimeout(r, 1000))
-        const { stdout } = await execAsync('pidof wechat wechat-bin xwechat').catch(() => ({ stdout: '' }))
-        const pids = stdout.trim().split(/\s+/).filter(p => p)
-        if (pids.length > 0) {
-          pid = parseInt(pids[0], 10)
-          break
+
+        try {
+          const { stdout } = await execAsync('pidof wechat wechat-bin xwechat', { env: envWithPath });
+          const pids = stdout.trim().split(/\s+/).filter(p => p);
+          if (pids.length > 0) {
+            pid = parseInt(pids[0], 10);
+            console.log(`[Debug] 第 ${i + 1} 秒，通过 pidof 成功获取 PID: ${pid}`);
+            break;
+          }
+        } catch (err: any) {
+          console.log(`[Debug] 第 ${i + 1} 秒，pidof 失败: ${err.message.split('\n')[0]}`);
+
+          // Fallback: 使用 pgrep 兜底
+          try {
+            const { stdout: pgrepOut } = await execAsync('pgrep -x "wechat|wechat-bin|xwechat"', { env: envWithPath });
+            const pids = pgrepOut.trim().split(/\s+/).filter(p => p);
+            if (pids.length > 0) {
+              pid = parseInt(pids[0], 10);
+              console.log(`[Debug] 第 ${i + 1} 秒，通过 pgrep 成功获取 PID: ${pid}`);
+              break;
+            }
+          } catch (e: any) {
+            console.log(`[Debug] 第 ${i + 1} 秒，pgrep 也失败: ${e.message.split('\n')[0]}`);
+          }
         }
       }
 
       if (!pid) {
-        const err = '未能自动启动微信，请手动启动并登录。'
+        const err = '未能自动启动微信，或获取PID失败，请查看控制台日志或手动启动并登录。'
         onStatus?.(err, 2)
         return { success: false, error: err }
       }
@@ -82,6 +153,7 @@ export class KeyServiceLinux {
 
       return await this.getDbKey(pid, onStatus)
     } catch (err: any) {
+      console.error('[Debug] 自动获取流程彻底崩溃:', err);
       const errMsg = '自动获取微信 PID 失败: ' + err.message
       onStatus?.(errMsg, 2)
       return { success: false, error: errMsg }

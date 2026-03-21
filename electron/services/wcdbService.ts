@@ -456,6 +456,20 @@ export class WcdbService {
   }
 
   /**
+   * 获取表情包释义
+   */
+  async getEmoticonCaption(dbPath: string, md5: string): Promise<{ success: boolean; caption?: string; error?: string }> {
+    return this.callWorker('getEmoticonCaption', { dbPath, md5 })
+  }
+
+  /**
+   * 获取表情包释义（严格 DLL 接口）
+   */
+  async getEmoticonCaptionStrict(md5: string): Promise<{ success: boolean; caption?: string; error?: string }> {
+    return this.callWorker('getEmoticonCaptionStrict', { md5 })
+  }
+
+  /**
    * 列出消息数据库
    */
   async listMessageDbs(): Promise<{ success: boolean; data?: string[]; error?: string }> {

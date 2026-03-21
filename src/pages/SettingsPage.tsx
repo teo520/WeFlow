@@ -175,6 +175,21 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
   const isClearingCache = isClearingAnalyticsCache || isClearingImageCache || isClearingAllCache
 
+  const [isWayland, setIsWayland] = useState(false)
+  useEffect(() => {
+    const checkWaylandStatus = async () => {
+      if (window.electronAPI?.app?.checkWayland) {
+        try {
+          const wayland = await window.electronAPI.app.checkWayland()
+          setIsWayland(wayland)
+        } catch (e) {
+          console.error('检查 Wayland 状态失败:', e)
+        }
+      }
+    }
+    checkWaylandStatus()
+  }, [])
+
   // 检查 Hello 可用性
   useEffect(() => {
     if (window.PublicKeyCredential) {
@@ -1169,6 +1184,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         <div className="form-group">
           <label>通知显示位置</label>
           <span className="form-hint">选择通知弹窗在屏幕上的显示位置</span>
+          {isWayland && (
+              <span className="form-hint" style={{ color: '#ff4d4f', marginTop: '4px', display: 'block' }}>
+              ⚠️ 注意：Wayland 环境下该配置可能无效！
+            </span>
+          )}
           <div className="custom-select">
             <div
               className={`custom-select-trigger ${positionDropdownOpen ? 'open' : ''}`}
@@ -1652,34 +1672,49 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   )
 
   const renderCacheTab = () => (
-    <div className="tab-content">
-      <p className="section-desc">管理应用缓存数据</p>
-      <div className="form-group">
-        <label>缓存目录 <span className="optional">(可选)</span></label>
-        <span className="form-hint">留空使用默认目录</span>
-        <input
-          type="text"
-          placeholder="留空使用默认目录"
-          value={cachePath}
-          onChange={(e) => {
-            const value = e.target.value
-            setCachePath(value)
-            scheduleConfigSave('cachePath', () => configService.setCachePath(value))
-          }}
-        />
-        <div className="btn-row">
-          <button className="btn btn-secondary" onClick={handleSelectCachePath}><FolderOpen size={16} /> 浏览选择</button>
-          <button
-            className="btn btn-secondary"
-            onClick={async () => {
-              setCachePath('')
-              await configService.setCachePath('')
-            }}
-          >
-            <RotateCcw size={16} /> 恢复默认
-          </button>
+      <div className="tab-content">
+        <p className="section-desc">管理应用缓存数据</p>
+        <div className="form-group">
+          <label>缓存目录 <span className="optional">(可选)</span></label>
+          <span className="form-hint">留空使用默认目录</span>
+          <input
+              type="text"
+              placeholder="留空使用默认目录"
+              value={cachePath}
+              onChange={(e) => {
+                const value = e.target.value
+                setCachePath(value)
+                scheduleConfigSave('cachePath', () => configService.setCachePath(value))
+              }}
+          />
+
+          <div style={{ marginTop: '8px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+            当前缓存位置：
+            <code style={{
+              background: 'var(--bg-secondary)',
+              padding: '3px 6px',
+              borderRadius: '4px',
+              userSelect: 'all',
+              wordBreak: 'break-all',
+              marginLeft: '4px'
+            }}>
+              {cachePath || (isMac ? '~/Documents/WeFlow' : isLinux ? '~/Documents/WeFlow' : '系统 文档\\WeFlow 目录')}
+            </code>
+          </div>
+
+          <div className="btn-row" style={{ marginTop: '12px' }}>
+            <button className="btn btn-secondary" onClick={handleSelectCachePath}><FolderOpen size={16} /> 浏览选择</button>
+            <button
+                className="btn btn-secondary"
+                onClick={async () => {
+                  setCachePath('')
+                  await configService.setCachePath('')
+                }}
+            >
+              <RotateCcw size={16} /> 恢复默认
+            </button>
+          </div>
         </div>
-      </div>
 
       <div className="btn-row">
         <button className="btn btn-secondary" onClick={handleClearAnalyticsCache} disabled={isClearingCache}>

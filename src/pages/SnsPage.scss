@@ -759,6 +759,26 @@
     margin-bottom: 12px;
 }
 
+.post-location {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: -4px 0 12px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+
+    svg {
+        flex-shrink: 0;
+        margin-top: 1px;
+        color: var(--text-tertiary);
+    }
+}
+
+.post-location-text {
+    word-break: break-word;
+}
+
 .post-media-container {
     margin-bottom: 12px;
 }

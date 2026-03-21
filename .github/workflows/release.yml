@@ -45,6 +45,8 @@ jobs:
       - name: Package and Publish macOS arm64 (unsigned DMG)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF_SIGN_PRIVATE_KEY: ${{ secrets.WF_SIGN_PRIVATE_KEY }}
+          WF_SIGNING_REQUIRED: "1"
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
           npx electron-builder --mac dmg --arm64 --publish always
@@ -82,6 +84,8 @@ jobs:
       - name: Package and Publish Linux
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF_SIGN_PRIVATE_KEY: ${{ secrets.WF_SIGN_PRIVATE_KEY }}
+          WF_SIGNING_REQUIRED: "1"
         run: |
           npx electron-builder --linux --publish always
 
@@ -118,8 +122,48 @@ jobs:
       - name: Package and Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF_SIGN_PRIVATE_KEY: ${{ secrets.WF_SIGN_PRIVATE_KEY }}
+          WF_SIGNING_REQUIRED: "1"
         run: |
           npx electron-builder --publish always
+
+  release-windows-arm64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out git repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Sync version with tag
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          echo "Syncing package.json version to $VERSION"
+          npm version $VERSION --no-git-tag-version --allow-same-version
+
+      - name: Build Frontend & Type Check
+        run: |
+          npx tsc
+          npx vite build
+
+      - name: Package and Publish Windows arm64
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF_SIGN_PRIVATE_KEY: ${{ secrets.WF_SIGN_PRIVATE_KEY }}
+          WF_SIGNING_REQUIRED: "1"
+        run: |
+          npx electron-builder --win nsis --arm64 --publish always
 
   update-release-notes:
     runs-on: ubuntu-latest
@@ -127,6 +171,7 @@ jobs:
       - release-mac-arm64
       - release-linux
       - release
+      - release-windows-arm64
 
     steps:
       - name: Generate release notes with platform download links
@@ -148,9 +193,11 @@ jobs:
           }
 
           WINDOWS_ASSET="$(pick_asset "\\.exe$")"
+          WINDOWS_ARM64_ASSET="$(echo "$ASSETS_JSON" | jq -r '[.assets[].name | select(test("arm64.*\\.exe$"))][0] // ""')"
           MAC_ASSET="$(pick_asset "\\.dmg$")"
           LINUX_DEB_ASSET="$(pick_asset "\\.deb$")"
           LINUX_TAR_ASSET="$(pick_asset "\\.tar\\.gz$")"
+          LINUX_APPIMAGE_ASSET="$(pick_asset "\\.AppImage$")"
 
           build_link() {
             local name="$1"
@@ -160,9 +207,11 @@ jobs:
           }
 
           WINDOWS_URL="$(build_link "$WINDOWS_ASSET")"
+          WINDOWS_ARM64_URL="$(build_link "$WINDOWS_ARM64_ASSET")"
           MAC_URL="$(build_link "$MAC_ASSET")"
           LINUX_DEB_URL="$(build_link "$LINUX_DEB_ASSET")"
           LINUX_TAR_URL="$(build_link "$LINUX_TAR_ASSET")"
+          LINUX_APPIMAGE_URL="$(build_link "$LINUX_APPIMAGE_ASSET")"
 
           cat > release_notes.md <<EOF
           ## 更新日志
@@ -172,10 +221,12 @@ jobs:
           [点击加入 Telegram 频道](https://t.me/weflow_cc)
 
           ## 下载
-          - Windows （Win10+）: ${WINDOWS_URL:-$RELEASE_PAGE}
+          - Windows x64（Win10+）: ${WINDOWS_URL:-$RELEASE_PAGE}
+          - Windows arm64: ${WINDOWS_ARM64_URL:-$RELEASE_PAGE}
           - macOS（M系列芯片）: ${MAC_URL:-$RELEASE_PAGE}
-          - Linux (.deb): ${LINUX_DEB_URL:-$RELEASE_PAGE}
+          - Linux (.deb) (即将废弃): ${LINUX_DEB_URL:-$RELEASE_PAGE}
           - Linux (.tar.gz): ${LINUX_TAR_URL:-$RELEASE_PAGE}
+          - linux (.AppImage): ${LINUX_APPIMAGE_URL:-$RELEASE_PAGE}
 
           > 如果某个平台链接暂时未生成，可进入完整发布页查看全部资源：$RELEASE_PAGE
           EOF
