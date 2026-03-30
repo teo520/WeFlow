@@ -103,6 +103,7 @@ function App() {
 
   // 数据收集同意状态
   const [showAnalyticsConsent, setShowAnalyticsConsent] = useState(false)
+  const [analyticsConsent, setAnalyticsConsent] = useState<boolean | null>(null)
 
   const [showWaylandWarning, setShowWaylandWarning] = useState(false)
 
@@ -252,6 +253,7 @@ function App() {
           // 协议已同意，检查数据收集同意状态
           const consent = await configService.getAnalyticsConsent()
           const denyCount = await configService.getAnalyticsDenyCount()
+          setAnalyticsConsent(consent)
           // 如果未设置同意状态且拒绝次数小于2次，显示弹窗
           if (consent === null && denyCount < 2) {
             setShowAnalyticsConsent(true)
@@ -266,18 +268,21 @@ function App() {
     checkAgreement()
   }, [])
 
-  // 初始化数据收集
+  // 初始化数据收集（仅在用户同意后）
   useEffect(() => {
-    cloudControl.initCloudControl()
-  }, [])
+    if (analyticsConsent === true) {
+      cloudControl.initCloudControl()
+    }
+  }, [analyticsConsent])
 
-  // 记录页面访问
+  // 记录页面访问（仅在用户同意后）
   useEffect(() => {
+    if (analyticsConsent !== true) return
     const path = location.pathname
     if (path && path !== '/') {
       cloudControl.recordPage(path)
     }
-  }, [location.pathname])
+  }, [location.pathname, analyticsConsent])
 
   const handleAgree = async () => {
     if (!agreementChecked) return
@@ -296,6 +301,7 @@ function App() {
 
   const handleAnalyticsAllow = async () => {
     await configService.setAnalyticsConsent(true)
+    setAnalyticsConsent(true)
     setShowAnalyticsConsent(false)
   }
 
